@@ -1,0 +1,60 @@
+name: Weekly ranked ingest
+
+# The ranked season resets Monday 13:00 AWST, which is Monday 05:00 UTC.
+# We attempt a few times over the following hours: the ingest is idempotent,
+# so a run that finds the season already captured costs one cheap API call,
+# and the extra attempts cover Supercell publishing the final standings late.
+on:
+  schedule:
+    - cron: '30 5 * * 1'
+    - cron: '30 9 * * 1'
+    - cron: '30 15 * * 1'
+  workflow_dispatch:
+    inputs:
+      season:
+        description: 'Specific season id to (re)capture'
+        required: false
+      backfill:
+        description: 'Number of past seasons to pull'
+        required: false
+        default: '1'
+      force:
+        description: 'Re-capture even if already complete'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    # Enrichment is ~1 API call per ranked player; give it room.
+    timeout-minutes: 90
+    env:
+      COC_API_TOKEN: ${{ secrets.COC_API_TOKEN }}
+      COC_API_BASE: ${{ vars.COC_API_BASE || 'https://cocproxy.royaleapi.dev/v1' }}
+      TRACKED_LEAGUE_IDS: ${{ vars.TRACKED_LEAGUE_IDS }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Capture season standings
+        run: |
+          npm run ingest -- \
+            ${{ inputs.season && format('--season {0}', inputs.season) || '' }} \
+            --backfill ${{ inputs.backfill || '1' }} \
+            ${{ inputs.force && '--force' || '' }}
+
+      - name: Enrich players and clans
+        run: npm run enrich
