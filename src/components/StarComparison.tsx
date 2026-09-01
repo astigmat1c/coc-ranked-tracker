@@ -125,17 +125,21 @@ function ScatterTooltip({ active, payload }: { active?: boolean; payload?: { pay
 
 export default function StarComparison({
   rows,
-  weeks,
   leagueName,
-  offenceSeasons,
-  defenceSeason,
+  offenceLabels,
+  defenceLabels,
 }: {
   rows: StarTuple[];
-  weeks: number;
   leagueName: string;
-  offenceSeasons: string[];
-  defenceSeason: string | null;
+  offenceLabels: string[];
+  defenceLabels: string[];
 }) {
+  const joinWeeks = (labels: string[]) =>
+    labels.length === 0
+      ? 'the selected weeks'
+      : labels.length === 1
+        ? labels[0]
+        : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
   const [search, setSearch] = useState('');
   const [townHall, setTownHall] = useState('');
   const [sort, setSort] = useState<SortKey>('offence_avg');
@@ -217,8 +221,16 @@ export default function StarComparison({
     { key: 'player_name', label: 'Player' },
     { key: 'town_hall_level', label: 'TH', numeric: true },
     { key: 'clan_name', label: 'Clan' },
-    { key: 'offence_avg', label: `Offence ★ (${weeks}w)`, numeric: true },
-    { key: 'defence_avg', label: 'Defence ★ (1w)', numeric: true },
+    {
+      key: 'offence_avg',
+      label: `Offence ★ (${offenceLabels.length}w)`,
+      numeric: true,
+    },
+    {
+      key: 'defence_avg',
+      label: `Defence ★ (${defenceLabels.length}w)`,
+      numeric: true,
+    },
     { key: 'gap', label: 'Gap', numeric: true },
   ];
 
@@ -273,11 +285,9 @@ export default function StarComparison({
         <p className="mb-3 max-w-prose text-xs text-[var(--text-muted)]">
           Dot size is how many players share that exact pair of averages — everyone gets the
           same attack allowance, so thousands land on identical values. Horizontal: average
-          stars per attack across{' '}
-          {offenceSeasons.length > 0 ? offenceSeasons.join(', ') : `the last ${weeks} weeks`}.
-          Vertical: average stars conceded per defence in{' '}
-          {defenceSeason ?? 'the latest week'}. The diagonal is parity — above it a player
-          concedes more than they take, below it they take more than they concede.
+          stars per attack across {joinWeeks(offenceLabels)}. Vertical: average stars conceded
+          per defence across {joinWeeks(defenceLabels)}. The diagonal is parity — above it a
+          player concedes more than they take, below it they take more than they concede.
         </p>
 
         {/* Size key — mark area carries magnitude, so it needs a scale the
@@ -325,7 +335,9 @@ export default function StarComparison({
                 tickLine={false}
                 axisLine={{ stroke: 'var(--axis)' }}
                 label={{
-                  value: `Offence — avg stars per attack (${weeks} weeks)`,
+                  value: `Offence — avg stars per attack (${offenceLabels.length} ${
+                    offenceLabels.length === 1 ? 'week' : 'weeks'
+                  })`,
                   position: 'insideBottom',
                   offset: -18,
                   fill: 'var(--text-secondary)',
@@ -343,7 +355,9 @@ export default function StarComparison({
                 axisLine={false}
                 width={64}
                 label={{
-                  value: 'Defence — avg stars conceded',
+                  value: `Defence — avg stars conceded (${defenceLabels.length} ${
+                    defenceLabels.length === 1 ? 'week' : 'weeks'
+                  })`,
                   angle: -90,
                   position: 'insideLeft',
                   fill: 'var(--text-secondary)',

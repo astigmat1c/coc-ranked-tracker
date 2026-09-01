@@ -1,18 +1,21 @@
 import Link from 'next/link';
 import StarComparison from '@/components/StarComparison';
+import WeekPicker from '@/components/WeekPicker';
 import { toStarTuple } from '@/lib/types';
-import {
-  getSeasons,
-  getStarComparison,
-  getTrackedLeagues,
-  hasStarData,
-} from '@/lib/queries';
+import { weekLabel } from '@/lib/weeks';
+import { getSeasons, getStarComparison, getTrackedLeagues, hasStarData } from '@/lib/queries';
 
 export const revalidate = 300;
 
 type Search = Record<string, string | string[] | undefined>;
 
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+
+const list = (v: string | string[] | undefined): string[] =>
+  (one(v) ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 /** The page exists for Legend II, so that's what it opens on when present. */
 const LEGEND_II = /legend\s*(ii|2)\b/i;
@@ -30,7 +33,6 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
 
 export default async function AnalysisPage({ searchParams }: { searchParams: Promise<Search> }) {
   const sp = await searchParams;
-  const weeks = Math.min(Math.max(Number(one(sp.weeks) ?? 3) || 3, 1), 12);
 
   const leagues = await getTrackedLeagues();
   if (leagues.length === 0) {
@@ -52,110 +54,114 @@ export default async function AnalysisPage({ searchParams }: { searchParams: Pro
     leagues[0];
 
   const seasons = await getSeasons(league.id);
-
-  if (seasons.length < weeks) {
+  if (seasons.length === 0) {
     return (
-      <Notice title="Not enough weeks captured yet">
+      <Notice title="No completed weeks stored">
         <p>
-          This comparison averages offence over {weeks} weeks, but only{' '}
-          {seasons.length} completed {seasons.length === 1 ? 'season is' : 'seasons are'} stored
-          for {league.name}.
-        </p>
-        <p>
-          Run <code>npm run ingest -- --backfill {weeks}</code> to pull the earlier weeks, if
-          the API still serves them.
+          No finished season has been captured for {league.name} yet. Run{' '}
+          <code>npm run ingest</code>.
         </p>
       </Notice>
     );
   }
 
+  // getSeasons returns newest-first.
+  const valid = new Set(seasons.map((s) => s.season_id));
+  const defaultOffence = seasons.slice(0, 3).map((s) => s.season_id).reverse();
+  const defaultDefence = [seasons[0].season_id];
+
+  // Unknown ids in a bookmarked or hand-edited URL are dropped rather than
+  // failing the page; an empty result after filtering falls back to defaults.
+  const pickedOffence = list(sp.off).filter((s) => valid.has(s));
+  const pickedDefence = list(sp.def).filter((s) => valid.has(s));
+  const offence = pickedOffence.length > 0 ? pickedOffence : defaultOffence;
+  const defence = pickedDefence.length > 0 ? pickedDefence : defaultDefence;
+
   const [rows, starsExist] = await Promise.all([
-    getStarComparison(league.id, weeks),
+    getStarComparison(league.id, offence, defence),
     hasStarData(league.id),
   ]);
 
-  const offenceSeasons = seasons.slice(0, weeks).map((s) => s.season_id).reverse();
-  const defenceSeason = seasons[0]?.season_id ?? null;
+  const byId = new Map(seasons.map((s) => [s.season_id, s]));
+  const labelsFor = (ids: string[]) =>
+    ids
+      .map((id) => byId.get(id))
+      .filter((s): s is NonNullable<typeof s> => Boolean(s))
+      .sort((a, b) => Date.parse(a.captured_at) - Date.parse(b.captured_at))
+      .map(weekLabel);
 
-  if (!starsExist) {
-    return (
-      <Notice title="No star data in the captured seasons">
-        <p>
-          {league.name} has {seasons.length} seasons stored, but none of their rows carried star
-          totals or attempt counts — so an average like 2.69 can&apos;t be computed. Win counts
-          alone can&apos;t produce one.
-        </p>
-        <p>
-          Check <code>worker/discovery/</code> for the field names the API actually returns. If
-          stars are in there under names the ingester doesn&apos;t recognise, add them to the
-          candidate lists in <code>worker/src/stars.ts</code> and re-run{' '}
-          <code>npm run ingest -- --force</code>. The ingest log prints which names it matched on
-          every run.
-        </p>
-      </Notice>
-    );
-  }
+  const picker = (
+    <WeekPicker
+      leagueId={league.id}
+      seasons={seasons}
+      offence={offence}
+      defence={defence}
+      defaultOffence={defaultOffence}
+      defaultDefence={defaultDefence}
+    />
+  );
 
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Offence vs defence</h1>
         <p className="mt-1 max-w-prose text-sm text-[var(--text-muted)]">
-          {league.name} · offence averaged over {weeks} weeks, defence over the latest week.
-          Only players who appeared in all {weeks} weeks are included, so nobody&apos;s average
-          rests on a partial record.
+          {league.name} · pick any weeks for each side — they don&apos;t have to be adjacent.
+          Only players who appeared in every week you select, on both sides, are included, so
+          no average rests on a partial record.
         </p>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-[var(--text-muted)]">Offence window:</span>
-        {[2, 3, 4, 6].map((w) => (
-          <Link
-            key={w}
-            href={`/analysis?league=${league.id}&weeks=${w}`}
-            className={`rounded-md border px-3 py-1 ${
-              w === weeks
-                ? 'border-[var(--accent)] text-[var(--text-primary)]'
-                : 'border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-            }`}
-          >
-            {w} weeks
-          </Link>
-        ))}
-        {leagues.length > 1 && (
-          <>
-            <span className="ml-4 text-[var(--text-muted)]">League:</span>
-            {leagues.map((l) => (
-              <Link
-                key={l.id}
-                href={`/analysis?league=${l.id}&weeks=${weeks}`}
-                className={`rounded-md border px-3 py-1 ${
-                  l.id === league.id
-                    ? 'border-[var(--accent)] text-[var(--text-primary)]'
-                    : 'border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                }`}
-              >
-                {l.name}
-              </Link>
-            ))}
-          </>
-        )}
-      </div>
+      {leagues.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-[var(--text-muted)]">League:</span>
+          {leagues.map((l) => (
+            <Link
+              key={l.id}
+              href={`/analysis?league=${l.id}`}
+              className={`rounded-md border px-3 py-1 ${
+                l.id === league.id
+                  ? 'border-[var(--accent)] text-[var(--text-primary)]'
+                  : 'border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              {l.name}
+            </Link>
+          ))}
+        </div>
+      )}
 
-      {rows.length === 0 ? (
-        <Notice title="No players qualified">
+      {picker}
+
+      {!starsExist ? (
+        <Notice title="No star data in the captured seasons">
           <p>
-            Star data exists for {league.name}, but no player appeared in all {weeks} captured
-            weeks with both attacks and defences recorded. Try a shorter offence window.
+            {league.name} has {seasons.length} {seasons.length === 1 ? 'season' : 'seasons'}{' '}
+            stored, but none of their rows carried star totals or attempt counts — so an average
+            like 2.69 can&apos;t be computed. Win counts alone can&apos;t produce one.
+          </p>
+          <p>
+            Check <code>worker/discovery/</code> for the field names the API actually returns. If
+            stars are in there under names the ingester doesn&apos;t recognise, add them to the
+            candidate lists in <code>worker/src/stars.ts</code> and re-run{' '}
+            <code>npm run ingest -- --force</code>. The ingest log prints which names it matched
+            on every run.
+          </p>
+        </Notice>
+      ) : rows.length === 0 ? (
+        <Notice title="No players qualified for this selection">
+          <p>
+            Star data exists for {league.name}, but no player appeared in all{' '}
+            {offence.length + defence.length} selected weeks with both attacks and defences
+            recorded. Narrowing the selection to fewer weeks will usually bring players back.
           </p>
         </Notice>
       ) : (
         <StarComparison
           rows={rows.map(toStarTuple)}
-          weeks={weeks}
           leagueName={league.name}
-          offenceSeasons={offenceSeasons}
-          defenceSeason={defenceSeason}
+          offenceLabels={labelsFor(offence)}
+          defenceLabels={labelsFor(defence)}
         />
       )}
     </div>

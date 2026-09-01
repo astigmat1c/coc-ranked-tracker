@@ -188,16 +188,22 @@ const toNum = (v: unknown): number | null => {
 };
 
 /**
- * Offence star average over the last `weeks` completed seasons against the
- * latest season's defence average, for players present in every offence week.
+ * Offence star average over the chosen offence weeks against the defence
+ * average over the chosen defence weeks. The two lists are independent and
+ * need not be contiguous. Only players present in *every* selected week on
+ * both sides are returned.
  */
 export async function getStarComparison(
   leagueId: number,
-  weeks = 3,
+  offenceSeasons: string[],
+  defenceSeasons: string[],
 ): Promise<StarComparisonRow[]> {
+  if (offenceSeasons.length === 0 || defenceSeasons.length === 0) return [];
+
   const { data, error } = await getSupabase().rpc('star_comparison', {
     p_league_id: leagueId,
-    p_offence_weeks: weeks,
+    p_offence_seasons: offenceSeasons,
+    p_defence_seasons: defenceSeasons,
   });
 
   if (error) throw new Error(error.message);
@@ -208,7 +214,8 @@ export async function getStarComparison(
     clan_tag: (r.clan_tag as string) ?? null,
     clan_name: (r.clan_name as string) ?? null,
     town_hall_level: toNum(r.town_hall_level),
-    weeks_counted: toNum(r.weeks_counted) ?? 0,
+    offence_weeks: toNum(r.offence_weeks) ?? 0,
+    defence_weeks: toNum(r.defence_weeks) ?? 0,
     offence_stars: toNum(r.offence_stars),
     offence_attacks: toNum(r.offence_attacks),
     offence_avg: toNum(r.offence_avg),

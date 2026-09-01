@@ -36,8 +36,9 @@ any serverless function timeout.
 Create a project, then run the files in `supabase/migrations/` in order
 (SQL editor, or `supabase db push`). `0001_init.sql` creates the tables, the two
 read views, and select-only RLS policies for `anon`; `0002_star_stats.sql` adds
-the star columns and the `star_comparison()` function behind the offence/defence
-page.
+the star columns and the function behind the offence/defence page;
+`0003_explicit_weeks.sql` replaces that function with the version taking
+explicit week lists. Run all three, in order.
 
 ### 2. API key
 
@@ -108,11 +109,19 @@ specific season or a backfill count.
   inverted axis, so up always means climbing), plus the underlying table.
 - **Compare** — tick up to five players in the rankings table and overlay their
   season curves.
-- **Offence vs defence** — average stars per attack over the last N weeks
-  plotted against average stars conceded per defence in the latest week, for
-  Legend II. Only players present in every offence week are included. Dot size
-  is how many players share a coordinate (see the caveat below). Sortable table
+- **Offence vs defence** — average stars per attack over weeks *you* pick,
+  plotted against average stars conceded per defence over a separate set of
+  weeks you pick. The two selections are independent and neither has to be
+  contiguous: 3, 10 and 17 August for offence against 24 August alone for
+  defence is a normal selection, and so is skipping a week. Only players
+  present in every selected week on both sides are included. Dot size is how
+  many players share a coordinate (see the caveat below). Sortable table
   underneath with the gap between the two figures.
+
+  The selection lives in the URL (`?off=2026-08-03,2026-08-24&def=2026-08-10`),
+  so a particular comparison is a link you can bookmark or send to someone.
+  Season ids that no longer exist are dropped and the page falls back to the
+  default of the last three weeks against the latest.
 
 ## The star caveat — read this before trusting the offence/defence page
 
@@ -148,7 +157,8 @@ the distribution entirely.
   player record, so a player renaming or switching clans doesn't rewrite history.
 - The offence/defence comparison runs as a Postgres function
   (`star_comparison`), not a client-side join — measured at 26ms over 24k
-  ranking rows. The page ships the result as positional tuples rather than
+  ranking rows. It takes the two week lists as arrays, so changing the
+  selection is one round trip, not a re-fetch of every week. The page ships the result as positional tuples rather than
   objects, which took the HTML for 8k players from 2.7MB to 596KB.
 - The `snapshots.kind` column is `'final'` or `'interim'`. Everything today is
   `'final'`; if you later want mid-week captures, add a second cron calling

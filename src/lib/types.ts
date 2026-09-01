@@ -60,7 +60,8 @@ export interface StarComparisonRow {
   clan_tag: string | null;
   clan_name: string | null;
   town_hall_level: number | null;
-  weeks_counted: number;
+  offence_weeks: number;
+  defence_weeks: number;
   offence_stars: number | null;
   offence_attacks: number | null;
   offence_avg: number | null;
