@@ -5,6 +5,7 @@ import type {
   LeagueRow,
   PlayerHistoryRow,
   SnapshotRow,
+  StarComparisonRow,
 } from './types';
 
 export const DEFAULT_PAGE_SIZE = 100;
@@ -173,4 +174,61 @@ export async function getCountriesInSeason(leagueId: number, seasonId: string) {
   return [...seen.entries()]
     .map(([code, name]) => ({ code, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ---------------------------------------------------------------------------
+// Offence vs defence star comparison
+// ---------------------------------------------------------------------------
+
+/** Postgres `numeric` and `bigint` arrive as strings over PostgREST. */
+const toNum = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Offence star average over the last `weeks` completed seasons against the
+ * latest season's defence average, for players present in every offence week.
+ */
+export async function getStarComparison(
+  leagueId: number,
+  weeks = 3,
+): Promise<StarComparisonRow[]> {
+  const { data, error } = await getSupabase().rpc('star_comparison', {
+    p_league_id: leagueId,
+    p_offence_weeks: weeks,
+  });
+
+  if (error) throw new Error(error.message);
+
+  return (data ?? []).map((r: Record<string, unknown>) => ({
+    player_tag: String(r.player_tag),
+    player_name: (r.player_name as string) ?? null,
+    clan_tag: (r.clan_tag as string) ?? null,
+    clan_name: (r.clan_name as string) ?? null,
+    town_hall_level: toNum(r.town_hall_level),
+    weeks_counted: toNum(r.weeks_counted) ?? 0,
+    offence_stars: toNum(r.offence_stars),
+    offence_attacks: toNum(r.offence_attacks),
+    offence_avg: toNum(r.offence_avg),
+    defence_stars: toNum(r.defence_stars),
+    defence_attempts: toNum(r.defence_attempts),
+    defence_avg: toNum(r.defence_avg),
+    latest_rank: toNum(r.latest_rank),
+    latest_trophies: toNum(r.latest_trophies),
+  }));
+}
+
+/**
+ * Distinguishes "the API never gave us stars" from "nobody qualified", so the
+ * page can explain an empty result instead of just showing nothing.
+ */
+export async function hasStarData(leagueId: number): Promise<boolean> {
+  const { data, error } = await getSupabase().rpc('star_data_available', {
+    p_league_id: leagueId,
+  });
+
+  if (error) throw new Error(error.message);
+  return Boolean(data);
 }

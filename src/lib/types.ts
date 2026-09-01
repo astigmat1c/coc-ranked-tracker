@@ -53,6 +53,88 @@ export interface PlayerHistoryRow {
   clan_name: string | null;
 }
 
+/** One row of the offence-vs-defence comparison, as star_comparison() returns it. */
+export interface StarComparisonRow {
+  player_tag: string;
+  player_name: string | null;
+  clan_tag: string | null;
+  clan_name: string | null;
+  town_hall_level: number | null;
+  weeks_counted: number;
+  offence_stars: number | null;
+  offence_attacks: number | null;
+  offence_avg: number | null;
+  defence_stars: number | null;
+  defence_attempts: number | null;
+  defence_avg: number | null;
+  latest_rank: number | null;
+  latest_trophies: number | null;
+}
+
+/**
+ * Wire format for the comparison page. A full Legend tier is ~10k rows, and
+ * shipping them as objects repeats every key 10k times — about 2.7MB of HTML
+ * measured at 8k players. As positional tuples carrying only the fields the
+ * page actually renders, the same data is roughly a third of that.
+ *
+ * Order: tag, name, clan, TH, offence avg, defence avg, attacks, defences, rank.
+ */
+export type StarTuple = [
+  string,
+  string | null,
+  string | null,
+  number | null,
+  number | null,
+  number | null,
+  number | null,
+  number | null,
+  number | null,
+];
+
+export function toStarTuple(r: StarComparisonRow): StarTuple {
+  return [
+    r.player_tag,
+    r.player_name,
+    r.clan_name,
+    r.town_hall_level,
+    r.offence_avg,
+    r.defence_avg,
+    r.offence_attacks,
+    r.defence_attempts,
+    r.latest_rank,
+  ];
+}
+
+export interface StarPoint {
+  player_tag: string;
+  player_name: string | null;
+  clan_name: string | null;
+  town_hall_level: number | null;
+  offence_avg: number | null;
+  defence_avg: number | null;
+  offence_attacks: number | null;
+  defence_attempts: number | null;
+  latest_rank: number | null;
+  /** Offence average minus defence average; positive means net taker. */
+  gap: number | null;
+}
+
+export function fromStarTuple(t: StarTuple): StarPoint {
+  const [tag, name, clan, th, off, def, attacks, defences, rank] = t;
+  return {
+    player_tag: tag,
+    player_name: name,
+    clan_name: clan,
+    town_hall_level: th,
+    offence_avg: off,
+    defence_avg: def,
+    offence_attacks: attacks,
+    defence_attempts: defences,
+    latest_rank: rank,
+    gap: off !== null && def !== null ? Number((off - def).toFixed(3)) : null,
+  };
+}
+
 export interface LeaderboardFilters {
   leagueId?: number;
   seasonId?: string;

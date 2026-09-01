@@ -33,9 +33,11 @@ any serverless function timeout.
 
 ### 1. Supabase
 
-Create a project, then run `supabase/migrations/0001_init.sql` in the SQL editor
-(or `supabase db push`). It creates the tables, the two read views, and
-select-only RLS policies for `anon`.
+Create a project, then run the files in `supabase/migrations/` in order
+(SQL editor, or `supabase db push`). `0001_init.sql` creates the tables, the two
+read views, and select-only RLS policies for `anon`; `0002_star_stats.sql` adds
+the star columns and the `star_comparison()` function behind the offence/defence
+page.
 
 ### 2. API key
 
@@ -106,6 +108,35 @@ specific season or a backfill count.
   inverted axis, so up always means climbing), plus the underlying table.
 - **Compare** — tick up to five players in the rankings table and overlay their
   season curves.
+- **Offence vs defence** — average stars per attack over the last N weeks
+  plotted against average stars conceded per defence in the latest week, for
+  Legend II. Only players present in every offence week are included. Dot size
+  is how many players share a coordinate (see the caveat below). Sortable table
+  underneath with the gap between the two figures.
+
+## The star caveat — read this before trusting the offence/defence page
+
+The ranking endpoints are documented to return `attackWins` and `defenseWins`,
+which are win **counts**. An average like "2.69 stars per attack" needs a star
+total and an attempt count, and a win count cannot produce one. Whether Ranked
+mode exposes stars at all is undocumented.
+
+So `worker/src/stars.ts` guesses: it probes a list of candidate field names on
+each raw row and writes nulls when none match. `npm run ingest` prints which
+names it matched on every run — watch for that line. If it says nothing matched,
+open `worker/discovery/`, find the real field names, add them to the candidate
+lists in that one file, and re-run `npm run ingest -- --force`. Nothing else in
+the codebase needs to change.
+
+Until then the offence/defence page says so plainly rather than showing an empty
+chart or, worse, a plausible-looking wrong number.
+
+A second thing worth knowing: everyone in a ranked week gets the same attack
+allowance, so an average is always stars ÷ a fixed denominator. That means the
+possible values are a limited set and thousands of players land on identical
+coordinates. The scatter bins exact duplicates and scales each mark's area by
+how many players it stands for — one dot per player would overprint and hide
+the distribution entirely.
 
 ## Notes on the data
 
@@ -115,6 +146,10 @@ specific season or a backfill count.
   columns are blank and their filters match nothing.
 - Player name, clan and TH are stored **on each ranking row** as well as on the
   player record, so a player renaming or switching clans doesn't rewrite history.
+- The offence/defence comparison runs as a Postgres function
+  (`star_comparison`), not a client-side join — measured at 26ms over 24k
+  ranking rows. The page ships the result as positional tuples rather than
+  objects, which took the HTML for 8k players from 2.7MB to 596KB.
 - The `snapshots.kind` column is `'final'` or `'interim'`. Everything today is
   `'final'`; if you later want mid-week captures, add a second cron calling
   ingest — the schema and both views already handle it, no migration needed.
@@ -132,11 +167,12 @@ specific season or a backfill count.
 ## Layout
 
 ```
-src/app/          routes: /rankings, /player/[tag], /compare
+src/app/          routes: /rankings, /player/[tag], /compare, /analysis
 src/components/   filter bar, table, charts
 src/lib/          Supabase client, typed queries
-worker/src/       coc.ts (API client), discover, ingest, enrich
-supabase/         migration
+worker/src/       coc.ts (API client), discover, ingest, enrich,
+                  stars.ts (the field-name shim to edit after discovery)
+supabase/         migrations
 ```
 
 Not affiliated with, endorsed by, or sponsored by Supercell.

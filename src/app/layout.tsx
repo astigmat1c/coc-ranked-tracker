@@ -20,6 +20,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/rankings" className="hover:text-[var(--text-primary)]">
                 Rankings
               </Link>
+              <Link href="/analysis" className="hover:text-[var(--text-primary)]">
+                Offence vs defence
+              </Link>
               <Link href="/compare" className="hover:text-[var(--text-primary)]">
                 Compare
               </Link>

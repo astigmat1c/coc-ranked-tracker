@@ -12,6 +12,7 @@
 import 'dotenv/config';
 import { cocFetch, cocFetchAll, normaliseTag } from './coc.js';
 import { db, upsertChunked } from './db.js';
+import { describeStarCoverage, extractStarStats } from './stars.js';
 
 interface League {
   id: number;
@@ -227,6 +228,8 @@ async function ingestSeason(league: League, seasonId: string, force: boolean) {
       clan_tag: r.clan?.tag ? normaliseTag(r.clan.tag) : null,
       clan_name: r.clan?.name ?? null,
       town_hall_level: r.townHallLevel ?? null,
+      // Nulls when the API doesn't expose stars — see worker/src/stars.ts.
+      ...extractStarStats(r),
       raw: r,
     })),
     'snapshot_id,player_tag',
@@ -238,6 +241,9 @@ async function ingestSeason(league: League, seasonId: string, force: boolean) {
     .eq('id', snapshot.id);
 
   console.log(`done  ${label} — ${rows.length} players, ${clans.size} clans`);
+  // Surfaced every run so a season ingested without star fields is obvious in
+  // the log, rather than discovered later as an empty comparison chart.
+  console.log(`      ${describeStarCoverage(rows)}`);
 }
 
 async function main() {
