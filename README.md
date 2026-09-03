@@ -190,6 +190,14 @@ opens any of it up.
   index still guards against concurrent double inserts.
 - **A snapshot is only marked complete after its rows are counted back.** A
   partial week flagged complete would poison every delta computed against it.
+- **`raw` on a ranking row is deliberately tiny.** A `/players/{tag}` response
+  is ~40KB of troops, heroes, equipment and achievements; storing it per player
+  per week is tens of megabytes a run and blew Supabase's statement timeout on
+  the first attempt. Everything actually used has a typed column, so `raw`
+  keeps only a few extra member fields.
+- **Upserts halve and retry on a statement timeout.** How many rows fit inside
+  the timeout depends on payload size and index count, which no fixed constant
+  gets right — so a heavy batch slows down rather than failing the run.
 - **Weekly figures are deltas.** `attack_wins` is stored as reported; the
   per-week number is the change against the previous snapshot. If the counter
   resets at the weekly boundary the new value *is* the week's figure, and

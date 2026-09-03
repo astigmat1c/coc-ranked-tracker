@@ -36,13 +36,47 @@ export async function upsertChunked<T extends object>(
   onConflict: string,
   chunk = 1000,
 ) {
-  for (let i = 0; i < rows.length; i += chunk) {
-    const slice = rows.slice(i, i + chunk);
-    const { error } = await getDb().from(table).upsert(slice as never, { onConflict });
-    if (error) {
-      throw new Error(`upsert into ${table} failed at row ${i}: ${error.message}`);
-    }
+  for (let i = 0; i < rows.length; ) {
+    const size = Math.min(chunk, rows.length - i);
+    const written = await upsertSlice(table, rows.slice(i, i + size), onConflict, size);
+    i += written;
   }
+}
+
+/**
+ * Writes one slice, halving it and retrying if the statement times out.
+ *
+ * Supabase enforces a per-statement timeout, and how many rows fit inside it
+ * depends on payload size and index count — not on a number anyone can pick
+ * correctly up front. Backing off on timeout means a heavier-than-expected
+ * batch slows down instead of failing the whole run.
+ *
+ * Returns how many rows were actually written so the caller can advance.
+ */
+async function upsertSlice<T extends object>(
+  table: string,
+  slice: T[],
+  onConflict: string,
+  size: number,
+): Promise<number> {
+  const { error } = await getDb().from(table).upsert(slice as never, { onConflict });
+  if (!error) return slice.length;
+
+  const timedOut =
+    (error as { code?: string }).code === '57014' || /statement timeout/i.test(error.message);
+
+  if (timedOut && slice.length > 1) {
+    const half = Math.max(1, Math.floor(size / 2));
+    console.warn(`  upsert into ${table} timed out at ${size} rows; retrying at ${half}`);
+    let done = 0;
+    while (done < slice.length) {
+      const next = slice.slice(done, done + half);
+      done += await upsertSlice(table, next, onConflict, next.length);
+    }
+    return done;
+  }
+
+  throw new Error(`upsert into ${table} failed (${slice.length} rows): ${error.message}`);
 }
 
 /**

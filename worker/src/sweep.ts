@@ -37,9 +37,12 @@ interface Location { id: number; name: string; isCountry?: boolean; countryCode?
 interface Member {
   tag: string;
   name: string;
+  role?: string;
   townHallLevel?: number;
   expLevel?: number;
   trophies?: number;
+  clanRank?: number;
+  donations?: number;
   leagueTier?: { id: number; name: string };
 }
 
@@ -449,10 +452,21 @@ async function main() {
           town_hall_level: m.townHallLevel ?? null,
           attack_wins: p?.attackWins ?? null,
           defense_wins: p?.defenseWins ?? null,
-          raw: { member: m, player: p ?? null },
+          // Deliberately NOT the whole API response. A player record is ~40KB
+          // of troops, heroes, equipment and achievements; storing it per
+          // player per week is tens of megabytes a run, blew the statement
+          // timeout, and none of it is read. Everything used has a typed
+          // column, so `raw` keeps only the few extra member fields that might
+          // become interesting later.
+          raw: {
+            role: m.role ?? null,
+            clanRank: m.clanRank ?? null,
+            donations: m.donations ?? null,
+          },
         };
       }),
       'snapshot_id,player_tag',
+      500,
     );
 
     // Read the row count back before marking the snapshot complete. Writes can
