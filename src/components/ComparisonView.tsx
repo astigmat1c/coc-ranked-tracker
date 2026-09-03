@@ -13,7 +13,11 @@ import {
   YAxis,
   ZAxis,
 } from 'recharts';
-import { fromStarTuple, type StarPoint, type StarTuple } from '@/lib/types';
+import {
+  fromComparisonTuple,
+  type ComparisonPoint,
+  type ComparisonTuple,
+} from '@/lib/types';
 
 /**
  * One population, so one colour — slot 1. A searched player is promoted to
@@ -23,8 +27,17 @@ import { fromStarTuple, type StarPoint, type StarTuple } from '@/lib/types';
 const BASE = 'var(--series-1)';
 const HIGHLIGHT = 'var(--series-2)';
 
-/** Stars per attack can't exceed 3, so both axes share a fixed, honest scale. */
-const AXIS_DOMAIN: [number, number] = [0, 3];
+/**
+ * Wins have no fixed ceiling the way a 0-3 star scale would, so the domain is
+ * derived from the data. Both axes share it, because a shared scale is what
+ * makes the parity diagonal mean anything.
+ */
+function axisMax(points: { offence_avg: number | null; defence_avg: number | null }[]) {
+  const vals = points.flatMap((p) =>
+    [p.offence_avg, p.defence_avg].filter((v): v is number => v !== null),
+  );
+  return Math.max(1, Math.ceil(Math.max(0, ...vals)));
+}
 
 type SortKey =
   | 'offence_avg'
@@ -35,7 +48,7 @@ type SortKey =
   | 'town_hall_level'
   | 'latest_rank';
 
-type Point = StarPoint;
+type Point = ComparisonPoint;
 
 /**
  * One plotted mark, standing for every player sharing an exact coordinate.
@@ -113,8 +126,8 @@ function ScatterTooltip({ active, payload }: { active?: boolean; payload?: { pay
         </>
       )}
       <dl className="tabular mt-1.5 space-y-0.5 text-[var(--text-secondary)]">
-        <Row label="Offence avg" value={`${bin.x.toFixed(2)} ★`} />
-        <Row label="Defence avg" value={`${bin.y.toFixed(2)} ★`} />
+        <Row label="Attack wins" value={`${bin.x.toFixed(2)} / week`} />
+        <Row label="Defence wins" value={`${bin.y.toFixed(2)} / week`} />
       </dl>
       {bin.count > 1 && (
         <p className="mt-1.5 text-[var(--text-muted)]">Search a name to pick one out.</p>
@@ -123,13 +136,13 @@ function ScatterTooltip({ active, payload }: { active?: boolean; payload?: { pay
   );
 }
 
-export default function StarComparison({
+export default function ComparisonView({
   rows,
   leagueName,
   offenceLabels,
   defenceLabels,
 }: {
-  rows: StarTuple[];
+  rows: ComparisonTuple[];
   leagueName: string;
   offenceLabels: string[];
   defenceLabels: string[];
@@ -147,7 +160,7 @@ export default function StarComparison({
   const [limit, setLimit] = useState(100);
 
   // Decoded once; the wire format is positional to keep the payload small.
-  const points: Point[] = useMemo(() => rows.map(fromStarTuple), [rows]);
+  const points: Point[] = useMemo(() => rows.map(fromComparisonTuple), [rows]);
 
   const townHalls = useMemo(
     () =>
@@ -187,6 +200,9 @@ export default function StarComparison({
 
   // Mark area scales with bin population. Capped so one enormous bin can't
   // swallow the plot, and floored so a single player is still ~9px.
+  // Shared upper bound for both axes and the parity line.
+  const max = useMemo(() => axisMax(points), [points]);
+
   const maxCount = useMemo(
     () => Math.max(1, ...background.map((b) => b.count), ...foreground.map((b) => b.count)),
     [background, foreground],
@@ -223,12 +239,12 @@ export default function StarComparison({
     { key: 'clan_name', label: 'Clan' },
     {
       key: 'offence_avg',
-      label: `Offence ★ (${offenceLabels.length}w)`,
+      label: `Atk wins/wk (${offenceLabels.length}w)`,
       numeric: true,
     },
     {
       key: 'defence_avg',
-      label: `Defence ★ (${defenceLabels.length}w)`,
+      label: `Def wins/wk (${defenceLabels.length}w)`,
       numeric: true,
     },
     { key: 'gap', label: 'Gap', numeric: true },
@@ -283,11 +299,11 @@ export default function StarComparison({
           Offence vs defence, {leagueName}
         </figcaption>
         <p className="mb-3 max-w-prose text-xs text-[var(--text-muted)]">
-          Dot size is how many players share that exact pair of averages — everyone gets the
-          same attack allowance, so thousands land on identical values. Horizontal: average
-          stars per attack across {joinWeeks(offenceLabels)}. Vertical: average stars conceded
-          per defence across {joinWeeks(defenceLabels)}. The diagonal is parity — above it a
-          player concedes more than they take, below it they take more than they concede.
+          Dot size is how many players share that exact pair of averages — win counts are
+          whole numbers over a fixed weekly allowance, so many players land on identical
+          values. Horizontal: attack wins per week across {joinWeeks(offenceLabels)}.
+          Vertical: defence wins per week across {joinWeeks(defenceLabels)}. The diagonal is
+          parity — below it a player wins more attacking than defending.
         </p>
 
         {/* Size key — mark area carries magnitude, so it needs a scale the
@@ -329,13 +345,13 @@ export default function StarComparison({
                 type="number"
                 dataKey="x"
                 name="Offence"
-                domain={AXIS_DOMAIN}
-                ticks={[0, 0.5, 1, 1.5, 2, 2.5, 3]}
+                domain={[0, max]}
+                allowDecimals={false}
                 tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
                 tickLine={false}
                 axisLine={{ stroke: 'var(--axis)' }}
                 label={{
-                  value: `Offence — avg stars per attack (${offenceLabels.length} ${
+                  value: `Offence — attack wins per week (${offenceLabels.length} ${
                     offenceLabels.length === 1 ? 'week' : 'weeks'
                   })`,
                   position: 'insideBottom',
@@ -348,14 +364,14 @@ export default function StarComparison({
                 type="number"
                 dataKey="y"
                 name="Defence"
-                domain={AXIS_DOMAIN}
-                ticks={[0, 0.5, 1, 1.5, 2, 2.5, 3]}
+                domain={[0, max]}
+                allowDecimals={false}
                 tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
                 tickLine={false}
                 axisLine={false}
                 width={64}
                 label={{
-                  value: `Defence — avg stars conceded (${defenceLabels.length} ${
+                  value: `Defence — defence wins per week (${defenceLabels.length} ${
                     defenceLabels.length === 1 ? 'week' : 'weeks'
                   })`,
                   angle: -90,
@@ -374,7 +390,7 @@ export default function StarComparison({
               <ReferenceLine
                 segment={[
                   { x: 0, y: 0 },
-                  { x: 3, y: 3 },
+                  { x: max, y: max },
                 ]}
                 stroke="var(--axis)"
                 strokeWidth={1}

@@ -8,12 +8,11 @@
     "start": "next start",
     "lint": "eslint",
     "discover": "tsx worker/src/discover.ts",
-    "ingest": "tsx worker/src/ingest.ts",
-    "enrich": "tsx worker/src/enrich.ts",
     "typecheck": "tsc --noEmit",
     "probe": "tsx worker/src/probe-ranked.ts",
     "survey": "tsx worker/src/survey.ts",
-    "probe:clans": "tsx worker/src/probe-clans.ts"
+    "probe:clans": "tsx worker/src/probe-clans.ts",
+    "sweep": "tsx worker/src/sweep.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",
@@ -30,7 +29,6 @@
     "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
-    "playwright": "^1.62.1",
     "tailwindcss": "^4",
     "tsx": "^4.23.12",
     "typescript": "^5"

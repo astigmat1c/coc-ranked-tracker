@@ -98,7 +98,7 @@ export default function WeekPicker({
       <div className="flex flex-col gap-4 sm:flex-row">
         <WeekGroup
           title="Offence weeks"
-          hint="Stars and attacks are summed across these, then divided."
+          hint="Attack wins are summed across these, then divided by the week count."
           seasons={seasons}
           selected={off}
           onToggle={(id) => toggle(off, setOff, id)}
@@ -106,7 +106,7 @@ export default function WeekPicker({
         />
         <WeekGroup
           title="Defence weeks"
-          hint="Same, for stars conceded. Independent of the offence choice."
+          hint="Same, for defence wins. Independent of the offence choice."
           seasons={seasons}
           selected={def}
           onToggle={(id) => toggle(def, setDef, id)}

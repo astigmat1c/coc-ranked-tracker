@@ -5,7 +5,7 @@ import type {
   LeagueRow,
   PlayerHistoryRow,
   SnapshotRow,
-  StarComparisonRow,
+  ComparisonRow,
 } from './types';
 
 export const DEFAULT_PAGE_SIZE = 100;
@@ -177,7 +177,11 @@ export async function getCountriesInSeason(leagueId: number, seasonId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Offence vs defence star comparison
+// Offence vs defence comparison
+//
+// Stars do not exist anywhere in the API — every ranking and player row carries
+// win counts, and no arithmetic turns a win count into stars per attack. This
+// runs on attack and defence wins instead, measured as week-over-week deltas.
 // ---------------------------------------------------------------------------
 
 /** Postgres `numeric` and `bigint` arrive as strings over PostgREST. */
@@ -188,19 +192,19 @@ const toNum = (v: unknown): number | null => {
 };
 
 /**
- * Offence star average over the chosen offence weeks against the defence
- * average over the chosen defence weeks. The two lists are independent and
- * need not be contiguous. Only players present in *every* selected week on
- * both sides are returned.
+ * Attack wins per week over the chosen offence weeks against defence wins per
+ * week over the chosen defence weeks. The two lists are independent and need
+ * not be contiguous. Only players present in every selected week on both sides
+ * are returned.
  */
-export async function getStarComparison(
+export async function getComparison(
   leagueId: number,
   offenceSeasons: string[],
   defenceSeasons: string[],
-): Promise<StarComparisonRow[]> {
+): Promise<ComparisonRow[]> {
   if (offenceSeasons.length === 0 || defenceSeasons.length === 0) return [];
 
-  const { data, error } = await getSupabase().rpc('star_comparison', {
+  const { data, error } = await getSupabase().rpc('performance_comparison', {
     p_league_id: leagueId,
     p_offence_seasons: offenceSeasons,
     p_defence_seasons: defenceSeasons,
@@ -216,11 +220,9 @@ export async function getStarComparison(
     town_hall_level: toNum(r.town_hall_level),
     offence_weeks: toNum(r.offence_weeks) ?? 0,
     defence_weeks: toNum(r.defence_weeks) ?? 0,
-    offence_stars: toNum(r.offence_stars),
-    offence_attacks: toNum(r.offence_attacks),
+    offence_total: toNum(r.offence_total),
     offence_avg: toNum(r.offence_avg),
-    defence_stars: toNum(r.defence_stars),
-    defence_attempts: toNum(r.defence_attempts),
+    defence_total: toNum(r.defence_total),
     defence_avg: toNum(r.defence_avg),
     latest_rank: toNum(r.latest_rank),
     latest_trophies: toNum(r.latest_trophies),
@@ -228,11 +230,12 @@ export async function getStarComparison(
 }
 
 /**
- * Distinguishes "the API never gave us stars" from "nobody qualified", so the
- * page can explain an empty result instead of just showing nothing.
+ * Week-over-week deltas need two completed snapshots, so a freshly seeded
+ * database has nothing to compare and the page should say so rather than
+ * showing an empty chart.
  */
-export async function hasStarData(leagueId: number): Promise<boolean> {
-  const { data, error } = await getSupabase().rpc('star_data_available', {
+export async function hasComparisonData(leagueId: number): Promise<boolean> {
+  const { data, error } = await getSupabase().rpc('comparison_data_available', {
     p_league_id: leagueId,
   });
 

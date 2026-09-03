@@ -53,8 +53,8 @@ export interface PlayerHistoryRow {
   clan_name: string | null;
 }
 
-/** One row of the offence-vs-defence comparison, as star_comparison() returns it. */
-export interface StarComparisonRow {
+/** One row of the offence-vs-defence comparison, as performance_comparison() returns it. */
+export interface ComparisonRow {
   player_tag: string;
   player_name: string | null;
   clan_tag: string | null;
@@ -62,25 +62,24 @@ export interface StarComparisonRow {
   town_hall_level: number | null;
   offence_weeks: number;
   defence_weeks: number;
-  offence_stars: number | null;
-  offence_attacks: number | null;
+  offence_total: number | null;
   offence_avg: number | null;
-  defence_stars: number | null;
-  defence_attempts: number | null;
+  defence_total: number | null;
   defence_avg: number | null;
   latest_rank: number | null;
   latest_trophies: number | null;
 }
 
 /**
- * Wire format for the comparison page. A full Legend tier is ~10k rows, and
- * shipping them as objects repeats every key 10k times — about 2.7MB of HTML
- * measured at 8k players. As positional tuples carrying only the fields the
- * page actually renders, the same data is roughly a third of that.
+ * Wire format for the comparison page. A full tier runs to ~10k rows, and
+ * shipping them as objects repeats every key 10k times — 2.7MB of HTML measured
+ * at 8k players. As positional tuples carrying only what the page renders, the
+ * same data is roughly a third of that.
  *
- * Order: tag, name, clan, TH, offence avg, defence avg, attacks, defences, rank.
+ * Order: tag, name, clan, TH, offence avg, defence avg, offence total,
+ * defence total, rank.
  */
-export type StarTuple = [
+export type ComparisonTuple = [
   string,
   string | null,
   string | null,
@@ -92,7 +91,7 @@ export type StarTuple = [
   number | null,
 ];
 
-export function toStarTuple(r: StarComparisonRow): StarTuple {
+export function toComparisonTuple(r: ComparisonRow): ComparisonTuple {
   return [
     r.player_tag,
     r.player_name,
@@ -100,28 +99,30 @@ export function toStarTuple(r: StarComparisonRow): StarTuple {
     r.town_hall_level,
     r.offence_avg,
     r.defence_avg,
-    r.offence_attacks,
-    r.defence_attempts,
+    r.offence_total,
+    r.defence_total,
     r.latest_rank,
   ];
 }
 
-export interface StarPoint {
+export interface ComparisonPoint {
   player_tag: string;
   player_name: string | null;
   clan_name: string | null;
   town_hall_level: number | null;
+  /** Attack wins per week, averaged over the selected offence weeks. */
   offence_avg: number | null;
+  /** Defence wins per week, averaged over the selected defence weeks. */
   defence_avg: number | null;
-  offence_attacks: number | null;
-  defence_attempts: number | null;
+  offence_total: number | null;
+  defence_total: number | null;
   latest_rank: number | null;
   /** Offence average minus defence average; positive means net taker. */
   gap: number | null;
 }
 
-export function fromStarTuple(t: StarTuple): StarPoint {
-  const [tag, name, clan, th, off, def, attacks, defences, rank] = t;
+export function fromComparisonTuple(t: ComparisonTuple): ComparisonPoint {
+  const [tag, name, clan, th, off, def, offTotal, defTotal, rank] = t;
   return {
     player_tag: tag,
     player_name: name,
@@ -129,10 +130,10 @@ export function fromStarTuple(t: StarTuple): StarPoint {
     town_hall_level: th,
     offence_avg: off,
     defence_avg: def,
-    offence_attacks: attacks,
-    defence_attempts: defences,
+    offence_total: offTotal,
+    defence_total: defTotal,
     latest_rank: rank,
-    gap: off !== null && def !== null ? Number((off - def).toFixed(3)) : null,
+    gap: off !== null && def !== null ? Number((off - def).toFixed(2)) : null,
   };
 }
 

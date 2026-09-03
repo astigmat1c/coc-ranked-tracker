@@ -1,9 +1,8 @@
-name: Weekly ranked ingest
+name: Weekly ranked sweep
 
-# The ranked season resets Monday 13:00 AWST, which is Monday 05:00 UTC.
-# We attempt a few times over the following hours: the ingest is idempotent,
-# so a run that finds the season already captured costs one cheap API call,
-# and the extra attempts cover Supercell publishing the final standings late.
+# The ranked week resets Monday 13:00 AWST = Monday 05:00 UTC. We attempt a few
+# times over the following hours; the sweep is idempotent per league-week, so a
+# repeat run just refreshes the same snapshot.
 on:
   schedule:
     - cron: '30 5 * * 1'
@@ -11,30 +10,33 @@ on:
     - cron: '30 15 * * 1'
   workflow_dispatch:
     inputs:
-      season:
-        description: 'Specific season id to (re)capture'
+      discover:
+        description: 'Rebuild the clan list first (slow; monthly is plenty)'
+        type: boolean
+        default: false
+      max_clans:
+        description: 'How many clans to read'
         required: false
-      backfill:
-        description: 'Number of past seasons to pull'
-        required: false
-        default: '1'
-      force:
-        description: 'Re-capture even if already complete'
+        default: '20000'
+      no_enrich:
+        description: 'Skip per-player attack/defence wins'
         type: boolean
         default: false
 
 concurrency:
-  group: ingest
+  group: sweep
   cancel-in-progress: false
 
 jobs:
-  ingest:
+  sweep:
     runs-on: ubuntu-latest
-    # Enrichment is ~1 API call per ranked player; give it room.
-    timeout-minutes: 90
+    # Reading 20k clans is ~11 minutes; enriching ~10k players adds ~10 more.
+    # Discovery, when enabled, is the long pole.
+    timeout-minutes: 180
     env:
       COC_API_TOKEN: ${{ secrets.COC_API_TOKEN }}
       COC_API_BASE: ${{ vars.COC_API_BASE || 'https://cocproxy.royaleapi.dev/v1' }}
+      COC_CONCURRENCY: ${{ vars.COC_CONCURRENCY || '10' }}
       TRACKED_LEAGUE_IDS: ${{ vars.TRACKED_LEAGUE_IDS }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -49,12 +51,38 @@ jobs:
 
       - run: npm ci
 
-      - name: Capture season standings
+      - name: Sweep clans and capture the week
         run: |
-          npm run ingest -- \
-            ${{ inputs.season && format('--season {0}', inputs.season) || '' }} \
-            --backfill ${{ inputs.backfill || '1' }} \
-            ${{ inputs.force && '--force' || '' }}
+          npm run sweep -- \
+            ${{ inputs.discover && '--discover' || '' }} \
+            --max-clans ${{ inputs.max_clans || '20000' }} \
+            ${{ inputs.no_enrich && '--no-enrich' || '' }}
 
-      - name: Enrich players and clans
-        run: npm run enrich
+  # Clan membership churns slowly, so rediscovery is monthly rather than weekly.
+  # It is the expensive phase and the weekly run reuses whatever it stored.
+  discover:
+    if: github.event_name == 'schedule' && github.event.schedule == '30 5 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    needs: sweep
+    env:
+      COC_API_TOKEN: ${{ secrets.COC_API_TOKEN }}
+      COC_API_BASE: ${{ vars.COC_API_BASE || 'https://cocproxy.royaleapi.dev/v1' }}
+      TRACKED_LEAGUE_IDS: ${{ vars.TRACKED_LEAGUE_IDS }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Only on the first Monday of the month.
+      - name: Refresh the clan list
+        run: |
+          if [ "$(date -u +%d)" -le 07 ]; then
+            npm run sweep -- --discover --max-clans 1
+          else
+            echo "not the first Monday; skipping clan rediscovery"
+          fi

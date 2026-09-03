@@ -1,15 +1,20 @@
 # Ranked Tracker
 
-Clash of Clans ranked-league standings with your own filters: weekly end-of-season
-snapshots stored in Supabase, a Next.js site on Vercel for browsing them, and a
-GitHub Actions cron doing the ingestion.
+Clash of Clans Legend II standings with your own filters: weekly snapshots built
+by sweeping clans, stored in Supabase, browsed on a Next.js site, refreshed by a
+GitHub Actions cron.
 
 ```
 Supercell API ──► RoyaleAPI proxy ──► GitHub Actions cron ──► Supabase (Postgres)
-                  (fixed IP)          (ingest + enrich)              │
+                  (fixed IP)          (weekly clan sweep)            │
                                                                      ▼
                                                         Next.js on Vercel (read-only)
 ```
+
+Population comes from clan member lists rather than any ranking endpoint,
+because every ranking endpoint is either gone or capped in a way that makes it
+useless for a tier. See **What the API actually exposes** below — it is the
+most important section in this file.
 
 ## Why the proxy
 
@@ -26,8 +31,8 @@ to them. Two ways around it, and the code supports both:
 Either way the site itself never talks to Supercell — it only reads Supabase.
 
 Ingestion runs on GitHub Actions rather than a Vercel cron for a second reason:
-enrichment is roughly one API call per ranked player, which comfortably exceeds
-any serverless function timeout.
+a sweep is tens of thousands of API calls over twenty-odd minutes, which
+comfortably exceeds any serverless function timeout.
 
 ## Setup
 
@@ -38,7 +43,8 @@ Create a project, then run the files in `supabase/migrations/` in order
 read views, and select-only RLS policies for `anon`; `0002_star_stats.sql` adds
 the star columns and the function behind the offence/defence page;
 `0003_explicit_weeks.sql` replaces that function with the version taking
-explicit week lists. Run all three, in order.
+explicit week lists; `0004_clan_sweep.sql` moves everything onto league tiers,
+weekly deltas and the clan sweep. Run all four, in order.
 
 ### 2. API key
 
@@ -62,26 +68,24 @@ Fill in `COC_API_TOKEN`, `NEXT_PUBLIC_SUPABASE_URL`,
 npm run discover
 ```
 
-The public API docs don't cover the Ranked league revamp, so this asks the API
-directly: it prints every league ID and name, checks which of them expose season
-history, and dumps sample rows to `worker/discovery/`. Read the output, find the
-tier you want (Legend II, etc.), and set `TRACKED_LEAGUE_IDS` in `.env`.
-
-If a Legend tier turns out not to expose `/leagues/{id}/seasons`, the sample
-dumps will show what it does expose — `ingest.ts` reads the ranking from one
-endpoint in `ingestSeason()`, so pointing it elsewhere is a small change in one
-function rather than a rewrite.
+This dumps the league tiers, leagues, locations and season lists to
+`worker/discovery/`. The tier ids are already known — Legend II is
+`105000035` — so this is a confirmation step rather than a discovery one, and
+it is how you would notice if Supercell changed something.
 
 ### 5. First ingest
 
 ```bash
-npm run ingest -- --backfill 12   # last 12 seasons, if the API keeps that much
-npm run enrich                    # Town Hall levels and clan countries
+npm run sweep -- --discover   # builds the clan list, then captures this week
 npm run dev
 ```
 
-`ingest` is idempotent: a season already captured in full is skipped unless you
-pass `--force`, so re-running it is cheap.
+The first run is the slow one because it enumerates clans. After that,
+`npm run sweep` reuses the stored clan list and takes about twenty minutes.
+
+The comparison page needs **two** weekly snapshots before it shows anything —
+its figures are the change between consecutive weeks, so a single capture has
+nothing to compare against.
 
 ## Deploying
 
@@ -93,11 +97,11 @@ key must *not* be set here.
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and variables `COC_API_BASE`,
 `TRACKED_LEAGUE_IDS`. `.github/workflows/ingest.yml` then runs itself.
 
-The ranked season resets Monday 13:00 AWST = **Monday 05:00 UTC**, so the workflow
-fires at 05:30, 09:30 and 15:30 UTC on Mondays. The repeats cost almost nothing
-(the ingest skips a season it already has) and cover Supercell publishing the
-final standings late. You can also run it by hand from the Actions tab, with a
-specific season or a backfill count.
+The ranked week resets Monday 13:00 AWST = **Monday 05:00 UTC**, so the workflow
+fires at 05:30, 09:30 and 15:30 UTC on Mondays; the sweep is idempotent per
+league-week, so a repeat just refreshes the same snapshot. Clan rediscovery is
+the expensive phase and runs only on the first Monday of the month. You can also
+run it by hand from the Actions tab, with or without discovery.
 
 ## What you can do on the site
 
@@ -109,69 +113,96 @@ specific season or a backfill count.
   inverted axis, so up always means climbing), plus the underlying table.
 - **Compare** — tick up to five players in the rankings table and overlay their
   season curves.
-- **Offence vs defence** — average stars per attack over weeks *you* pick,
-  plotted against average stars conceded per defence over a separate set of
-  weeks you pick. The two selections are independent and neither has to be
-  contiguous: 3, 10 and 17 August for offence against 24 August alone for
-  defence is a normal selection, and so is skipping a week. Only players
-  present in every selected week on both sides are included. Dot size is how
-  many players share a coordinate (see the caveat below). Sortable table
-  underneath with the gap between the two figures.
+- **Offence vs defence** — attack wins per week over weeks *you* pick, plotted
+  against defence wins per week over a separate set of weeks you pick. The two
+  selections are independent and neither has to be contiguous: 3, 10 and 17
+  August for offence against 24 August alone for defence is a normal selection,
+  and so is skipping a week. Only players present in every selected week on both
+  sides are included. Dot size is how many players share a coordinate. Sortable
+  table underneath with the gap between the two figures.
+
+  These are **wins, not stars** — see the findings section for why stars are not
+  obtainable.
 
   The selection lives in the URL (`?off=2026-08-03,2026-08-24&def=2026-08-10`),
   so a particular comparison is a link you can bookmark or send to someone.
   Season ids that no longer exist are dropped and the page falls back to the
   default of the last three weeks against the latest.
 
-## The star caveat — read this before trusting the offence/defence page
+## What the API actually exposes — findings
 
-The ranking endpoints are documented to return `attackWins` and `defenseWins`,
-which are win **counts**. An average like "2.69 stars per attack" needs a star
-total and an attempt count, and a win count cannot produce one. Whether Ranked
-mode exposes stars at all is undocumented.
+Supercell never documented the Ranked revamp, so this was established by
+probing. It is worth reading before changing anything:
 
-So `worker/src/stars.ts` guesses: it probes a list of candidate field names on
-each raw row and writes nulls when none match. `npm run ingest` prints which
-names it matched on every run — watch for that line. If it says nothing matched,
-open `worker/discovery/`, find the real field names, add them to the candidate
-lists in that one file, and re-run `npm run ingest -- --force`. Nothing else in
-the codebase needs to change.
+- **Legend II is a league *tier*, id `105000035`**, from `/leaguetiers`. It is
+  not a league. `/leagues` still returns only the 23 legacy leagues, and every
+  live row now reports the legacy league as `Unranked`, so `leagues` in this
+  database is populated from `/leaguetiers` instead.
+- **There is no ranking under a tier.** `/leaguetiers/{id}` returns a name and
+  two icons. `/leaguetiers/{id}/seasons`, `/leaguetiers/{id}/rankings/players`,
+  everything under `/leaguegroups/`, and every `/players/{tag}/…` sub-resource
+  all 404.
+- **`/locations/{id}/rankings/players` caps at exactly 200 and sorts by
+  trophies.** In competitive countries the top 200 is entirely Legend I, so a
+  full sweep of every country returned **zero** Legend II players for India,
+  the US, Vietnam, Iran, Indonesia, Brazil, Russia, Germany, France, the UK,
+  China and Japan. Its 3,277 rows came almost entirely from small countries.
+  That route is unusable and is not what this project uses.
+- **`/locations/32000006` ("International") is dead.** Only real countries
+  respond.
+- **Clan member rows carry `leagueTier` and `townHallLevel`.** One
+  `/clans/{tag}` call classifies up to 50 players, clan search pages well past
+  200, and measurement gave ~525 Legend II players per 1,000 clan calls. This
+  is the route the sweep takes.
+- **Stars do not exist anywhere.** Not on the player record, not on a tier, not
+  on any ranking or member row. Every response carries `attackWins` and
+  `defenseWins` — win *counts*. An average like "2.69 stars per attack" cannot
+  be computed from this API, so the comparison page runs on wins.
 
-Until then the offence/defence page says so plainly rather than showing an empty
-chart or, worse, a plausible-looking wrong number.
+The player record is the one place the weekly ranked structure surfaces:
+`leagueTier`, `currentLeagueGroupTag` (the ~100-player weekly pool) and
+`currentLeagueSeasonId` / `previousLeagueSeasonId`, which are Unix seconds
+exactly 604800 apart. None of those identifiers is queryable.
 
-A second thing worth knowing: everyone in a ranked week gets the same attack
-allowance, so an average is always stars ÷ a fixed denominator. That means the
-possible values are a limited set and thousands of players land on identical
-coordinates. The scatter bins exact duplicates and scales each mark's area by
-how many players it stands for — one dot per player would overprint and hide
-the distribution entirely.
+`npm run discover`, `npm run probe` and `npm run probe:clans` re-establish all
+of the above against the live API, and will show it immediately if Supercell
+opens any of it up.
 
 ## Notes on the data
 
-- Town Hall level and country don't come back from the ranking endpoints.
-  TH comes from `/players/{tag}` and country from the player's clan via
-  `/clans/{tag}`, both filled in by `npm run enrich`. Until it has run, those two
-  columns are blank and their filters match nothing.
-- Player name, clan and TH are stored **on each ranking row** as well as on the
-  player record, so a player renaming or switching clans doesn't rewrite history.
-- The offence/defence comparison runs as a Postgres function
-  (`star_comparison`), not a client-side join — measured at 26ms over 24k
-  ranking rows. It takes the two week lists as arrays, so changing the
-  selection is one round trip, not a re-fetch of every week. The page ships the result as positional tuples rather than
-  objects, which took the HTML for 8k players from 2.7MB to 596KB.
-- The `snapshots.kind` column is `'final'` or `'interim'`. Everything today is
-  `'final'`; if you later want mid-week captures, add a second cron calling
-  ingest — the schema and both views already handle it, no migration needed.
+- **Rank is derived.** A clan sweep has no global ranking, so `rank` is the
+  player's position by trophies within the players the sweep actually captured.
+  It is a rank within the tracked set, not a world rank.
+- **Coverage is a large sample, not the whole tier.** The sweep sees players who
+  are in a clan the sweep reads. Raise `MAX_CLANS` for more coverage at the cost
+  of run time.
+- **Weekly figures are deltas.** `attack_wins` is stored as reported; the
+  per-week number is the change against the previous snapshot. If the counter
+  resets at the weekly boundary the new value *is* the week's figure, and
+  `player_week_stats` handles both cases, so it is correct either way.
+- **The earliest snapshot has no delta** and therefore cannot be an offence or
+  defence week. The comparison page excludes it from the picker rather than
+  offering a choice that always returns nothing.
+- Town Hall level and clan now arrive on the clan member row, so the old
+  separate enrichment pass is gone. The extra `/players/{tag}` call is only for
+  attack and defence wins.
+- Player name, clan and TH are stored **on each ranking row** as well as the
+  player record, so a rename or clan move never rewrites history.
+- The comparison runs as a Postgres function (`performance_comparison`) taking
+  two week lists as arrays, and the page ships results as positional tuples —
+  2.7MB of HTML became 596KB at 8k players.
 
 ## Scripts
 
 | | |
 |---|---|
 | `npm run dev` / `build` / `start` | the Next.js site |
-| `npm run discover` | probe the API, dump league/season/shape info |
-| `npm run ingest` | capture end-of-season standings |
-| `npm run enrich` | fill in Town Hall levels and clan countries |
+| `npm run sweep` | the weekly ingest: read clans, capture the week |
+| `npm run sweep -- --discover` | rebuild the clan list first (slow, monthly) |
+| `npm run discover` | dump leagues, tiers, seasons, locations |
+| `npm run probe -- --player "#TAG"` | re-test every ranked endpoint |
+| `npm run probe:clans -- --clan "#TAG"` | re-test the clan route and its yield |
+| `npm run survey` | measure the (unusable) country-sweep coverage |
 | `npm run typecheck` / `lint` | |
 
 ## Layout
@@ -180,8 +211,8 @@ the distribution entirely.
 src/app/          routes: /rankings, /player/[tag], /compare, /analysis
 src/components/   filter bar, table, charts
 src/lib/          Supabase client, typed queries
-worker/src/       coc.ts (API client), discover, ingest, enrich,
-                  stars.ts (the field-name shim to edit after discovery)
+worker/src/       coc.ts (API client), sweep.ts (the ingest),
+                  discover / probe-ranked / probe-clans / survey (diagnostics)
 supabase/         migrations
 ```
 
