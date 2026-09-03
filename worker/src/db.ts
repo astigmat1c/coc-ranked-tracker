@@ -44,3 +44,33 @@ export async function upsertChunked<T extends object>(
     }
   }
 }
+
+/**
+ * Reads every matching row, a page at a time.
+ *
+ * PostgREST caps responses at its `max-rows` setting — 1000 on Supabase — and
+ * enforces it silently: `.limit(20000)` returns 1000 rows and no error. Any
+ * read that can exceed 1000 rows must page, or it is quietly wrong. This bit
+ * once: a clan table holding 65,973 rows swept only 1,000 of them.
+ */
+export async function selectPaged<T>(
+  page: (from: number, to: number) => PromiseLike<{
+    data: T[] | null;
+    error: { message: string } | null;
+  }>,
+  { pageSize = 1000, max = Infinity }: { pageSize?: number; max?: number } = {},
+): Promise<T[]> {
+  const out: T[] = [];
+
+  for (let from = 0; out.length < max; from += pageSize) {
+    const { data, error } = await page(from, from + pageSize - 1);
+    if (error) throw new Error(error.message);
+
+    const rows = data ?? [];
+    out.push(...rows);
+    // A short page means the end of the result set.
+    if (rows.length < pageSize) break;
+  }
+
+  return max === Infinity ? out : out.slice(0, max);
+}

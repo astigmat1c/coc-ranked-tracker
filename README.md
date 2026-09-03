@@ -174,8 +174,22 @@ opens any of it up.
   player's position by trophies within the players the sweep actually captured.
   It is a rank within the tracked set, not a world rank.
 - **Coverage is a large sample, not the whole tier.** The sweep sees players who
-  are in a clan the sweep reads. Raise `MAX_CLANS` for more coverage at the cost
-  of run time.
+  are in a clan it reads, ordered by clan points so the most productive clans
+  come first. A real run found 11,883 Legend-tier players in the top 1,000
+  clans of 65,973 discovered. Raise `MAX_CLANS` for more, but the cost lands on
+  the enrich pass, which is one API call per tracked player — `MAX_ENRICH` caps
+  that so a big sweep cannot run away.
+- **Everything that can return more than 1,000 rows pages.** PostgREST caps
+  responses at 1,000 and does it silently: `.limit(20000)` returns 1,000 rows
+  and no error. `selectPaged` in `worker/src/db.ts` exists for this, and it is
+  not optional — the first live run swept 1,000 of 65,973 clans because of it.
+- **Snapshots are written with an explicit lookup, not an upsert.** The
+  uniqueness rule is a partial index (`unique (league_id, season_id) where kind
+  = 'final'`), and Postgres only infers a partial index for `ON CONFLICT` when
+  the statement repeats the predicate — which PostgREST cannot express. The
+  index still guards against concurrent double inserts.
+- **A snapshot is only marked complete after its rows are counted back.** A
+  partial week flagged complete would poison every delta computed against it.
 - **Weekly figures are deltas.** `attack_wins` is stored as reported; the
   per-week number is the change against the previous snapshot. If the counter
   resets at the weekly boundary the new value *is* the week's figure, and

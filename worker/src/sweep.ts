@@ -22,10 +22,14 @@
  */
 import 'dotenv/config';
 import { cocFetch, cocFetchAll, encodeTag, mapLimit, normaliseTag, CocApiError } from './coc.js';
-import { getDb, upsertChunked } from './db.js';
+import { getDb, selectPaged, upsertChunked } from './db.js';
 
-/** Legend III / II / I, from /leaguetiers. */
-const DEFAULT_TIERS = [105000034, 105000035, 105000036];
+/**
+ * Legend II by default. Add 105000034 (Legend III) or 105000036 (Legend I) via
+ * TRACKED_LEAGUE_IDS — but note each extra tier multiplies the enrichment pass,
+ * which is one API call per tracked player and the slowest part of a run.
+ */
+const DEFAULT_TIERS = [105000035];
 
 interface Tier { id: number; name: string; iconUrls?: Record<string, string> }
 interface Location { id: number; name: string; isCountry?: boolean; countryCode?: string }
@@ -184,14 +188,19 @@ async function discoverClans(countries: Location[], minMembers: number, maxPages
 
 /** Phase B — read member lists and keep everyone in a tracked tier. */
 async function sweepClans(tierIds: Set<number>, maxClans: number) {
-  const { data, error } = await getDb()
-    .from('clans')
-    .select('tag')
-    .order('clan_points', { ascending: false, nullsFirst: false })
-    .limit(maxClans);
-
-  if (error) throw new Error(`clan selection failed: ${error.message}`);
-  const tags = (data ?? []).map((c) => c.tag as string);
+  // Highest clan points first: those clans are where Legend players cluster,
+  // so the first N calls are the most productive N calls.
+  const rows = await selectPaged<{ tag: string }>(
+    (from, to) =>
+      getDb()
+        .from('clans')
+        .select('tag')
+        .order('clan_points', { ascending: false, nullsFirst: false })
+        .order('tag', { ascending: true })
+        .range(from, to),
+    { max: maxClans },
+  );
+  const tags = rows.map((c) => c.tag);
 
   if (!tags.length) {
     throw new Error('No clans stored. Run once with --discover first.');
@@ -278,7 +287,11 @@ async function main() {
   );
   if (tierIds.size === 0) DEFAULT_TIERS.forEach((t) => tierIds.add(t));
 
-  const maxClans = Number(args['max-clans'] ?? process.env.MAX_CLANS ?? 20000);
+  // Calibrated from a real run: the top 1,000 clans by points yielded 11,883
+  // players across all three Legend tiers, so ~5,000 clans is a good hour's
+  // worth of coverage for one tier without the enrich pass running away.
+  const maxClans = Number(args['max-clans'] ?? process.env.MAX_CLANS ?? 5000);
+  const maxEnrich = Number(args['max-enrich'] ?? process.env.MAX_ENRICH ?? 25000);
   const capturedAt = new Date();
   const seasonId = seasonIdFor(capturedAt);
 
@@ -301,7 +314,22 @@ async function main() {
     return;
   }
 
-  const wins = args['no-enrich'] ? new Map<string, PlayerDetail>() : await enrichWins([...members.keys()]);
+  let wins = new Map<string, PlayerDetail>();
+  if (!args['no-enrich']) {
+    const toEnrich = [...members.keys()];
+    if (toEnrich.length > maxEnrich) {
+      console.log(
+        `\nenrich: ${toEnrich.length} players exceeds --max-enrich ${maxEnrich}; ` +
+          'capping. Attack/defence wins will be missing for the remainder — raise ' +
+          '--max-enrich or lower --max-clans.',
+      );
+    }
+    console.log(
+      `\nenrich: about ${Math.ceil(Math.min(toEnrich.length, maxEnrich) / 600)} min at ` +
+        `${process.env.COC_CONCURRENCY ?? 10} concurrent`,
+    );
+    wins = await enrichWins(toEnrich.slice(0, maxEnrich));
+  }
 
   // One snapshot per tier per week — the same grain the site already reads.
   for (const tierId of tierIds) {
@@ -326,33 +354,59 @@ async function main() {
 
     const prevRank = new Map<string, number>();
     if (prevSnap?.id) {
-      const { data: prevRows } = await getDb()
-        .from('ranking_entries')
-        .select('player_tag, rank')
-        .eq('snapshot_id', prevSnap.id);
-      for (const r of prevRows ?? []) prevRank.set(r.player_tag as string, r.rank as number);
+      const prevRows = await selectPaged<{ player_tag: string; rank: number }>((from, to) =>
+        getDb()
+          .from('ranking_entries')
+          .select('player_tag, rank')
+          .eq('snapshot_id', prevSnap.id)
+          .order('rank', { ascending: true })
+          .range(from, to),
+      );
+      for (const r of prevRows) prevRank.set(r.player_tag, r.rank);
     }
 
-    const { data: snapshot, error } = await getDb()
-      .from('snapshots')
-      .upsert(
-        {
-          league_id: tierId,
-          season_id: seasonId,
-          kind: 'final',
-          captured_at: capturedAt.toISOString(),
-          source: process.env.COC_API_BASE ?? 'cocproxy',
-          method: 'clan_sweep',
-          clans_swept: clansRead,
-          player_count: inTier.length,
-          complete: false,
-        },
-        { onConflict: 'league_id,season_id,kind' },
-      )
-      .select('id')
-      .single();
+    // The uniqueness rule here is a PARTIAL index —
+    //   unique (league_id, season_id) where kind = 'final'
+    // — and Postgres only infers a partial index for ON CONFLICT when the
+    // statement repeats its WHERE predicate, which PostgREST's onConflict
+    // (bare column names) cannot express. So look the row up and insert or
+    // update explicitly. The index still guards against a concurrent double
+    // insert; we simply cannot route through ON CONFLICT.
+    const header = {
+      league_id: tierId,
+      season_id: seasonId,
+      kind: 'final',
+      captured_at: capturedAt.toISOString(),
+      source: process.env.COC_API_BASE ?? 'cocproxy',
+      method: 'clan_sweep',
+      clans_swept: clansRead,
+      player_count: inTier.length,
+      complete: false,
+    };
 
-    if (error || !snapshot) throw new Error(`snapshot upsert failed: ${error?.message}`);
+    const { data: existing } = await getDb()
+      .from('snapshots')
+      .select('id')
+      .eq('league_id', tierId)
+      .eq('season_id', seasonId)
+      .eq('kind', 'final')
+      .maybeSingle();
+
+    let snapshotId: number;
+
+    if (existing?.id) {
+      const { error } = await getDb().from('snapshots').update(header).eq('id', existing.id);
+      if (error) throw new Error(`snapshot update failed: ${error.message}`);
+      snapshotId = existing.id as number;
+    } else {
+      const { data, error } = await getDb()
+        .from('snapshots')
+        .insert(header)
+        .select('id')
+        .single();
+      if (error || !data) throw new Error(`snapshot insert failed: ${error?.message}`);
+      snapshotId = data.id as number;
+    }
 
     const clanRows = new Map<string, object>();
     for (const [, m] of inTier) {
@@ -383,7 +437,7 @@ async function main() {
       inTier.map(([tag, m], i) => {
         const p = wins.get(tag);
         return {
-          snapshot_id: snapshot.id,
+          snapshot_id: snapshotId,
           player_tag: tag,
           rank: i + 1,
           previous_rank: prevRank.get(tag) ?? null,
@@ -401,12 +455,30 @@ async function main() {
       'snapshot_id,player_tag',
     );
 
+    // Read the row count back before marking the snapshot complete. Writes can
+    // fail partially, and a snapshot flagged complete with half its players is
+    // worse than one that visibly failed — every week-over-week delta computed
+    // against it would be wrong.
+    const { count, error: countErr } = await getDb()
+      .from('ranking_entries')
+      .select('player_tag', { count: 'exact', head: true })
+      .eq('snapshot_id', snapshotId);
+
+    if (countErr) throw new Error(`verification read failed: ${countErr.message}`);
+
+    if (count !== inTier.length) {
+      throw new Error(
+        `snapshot ${snapshotId} holds ${count} rows but ${inTier.length} were written; ` +
+          'leaving it incomplete rather than recording a partial week',
+      );
+    }
+
     await getDb()
       .from('snapshots')
       .update({ complete: true, player_count: inTier.length })
-      .eq('id', snapshot.id);
+      .eq('id', snapshotId);
 
-    console.log(`done  tier ${tierId} / ${seasonId} — ${inTier.length} players`);
+    console.log(`done  tier ${tierId} / ${seasonId} — ${inTier.length} players verified`);
   }
 }
 
