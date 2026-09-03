@@ -10,7 +10,8 @@
     "discover": "tsx worker/src/discover.ts",
     "ingest": "tsx worker/src/ingest.ts",
     "enrich": "tsx worker/src/enrich.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "probe": "tsx worker/src/probe-ranked.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",
