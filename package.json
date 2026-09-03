@@ -12,7 +12,8 @@
     "enrich": "tsx worker/src/enrich.ts",
     "typecheck": "tsc --noEmit",
     "probe": "tsx worker/src/probe-ranked.ts",
-    "survey": "tsx worker/src/survey.ts"
+    "survey": "tsx worker/src/survey.ts",
+    "probe:clans": "tsx worker/src/probe-clans.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",
