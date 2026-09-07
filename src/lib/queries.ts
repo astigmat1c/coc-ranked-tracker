@@ -204,15 +204,32 @@ export async function getComparison(
 ): Promise<ComparisonRow[]> {
   if (offenceSeasons.length === 0 || defenceSeasons.length === 0) return [];
 
-  const { data, error } = await getSupabase().rpc('performance_comparison', {
-    p_league_id: leagueId,
-    p_offence_seasons: offenceSeasons,
-    p_defence_seasons: defenceSeasons,
-  });
+  // PostgREST caps a set-returning function at its max-rows setting — 1000 on
+  // Supabase — and says nothing about having done it. A single call returned
+  // 1000 of 5163 comparable players, which looked like a plausible chart and
+  // was not. Page until a short page arrives, exactly as selectPaged does for
+  // table reads. The function's ORDER BY ends in player_tag so the order is
+  // total and the pages line up across executions.
+  const PAGE = 1000;
+  const raw: Record<string, unknown>[] = [];
 
-  if (error) throw new Error(error.message);
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getSupabase()
+      .rpc('performance_comparison', {
+        p_league_id: leagueId,
+        p_offence_seasons: offenceSeasons,
+        p_defence_seasons: defenceSeasons,
+      })
+      .range(from, from + PAGE - 1);
 
-  return (data ?? []).map((r: Record<string, unknown>) => ({
+    if (error) throw new Error(error.message);
+
+    const page = (data ?? []) as Record<string, unknown>[];
+    raw.push(...page);
+    if (page.length < PAGE) break;
+  }
+
+  return raw.map((r: Record<string, unknown>) => ({
     player_tag: String(r.player_tag),
     player_name: (r.player_name as string) ?? null,
     clan_tag: (r.clan_tag as string) ?? null,

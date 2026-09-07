@@ -44,7 +44,9 @@ read views, and select-only RLS policies for `anon`; `0002_star_stats.sql` adds
 the star columns and the function behind the offence/defence page;
 `0003_explicit_weeks.sql` replaces that function with the version taking
 explicit week lists; `0004_clan_sweep.sql` moves everything onto league tiers,
-weekly deltas and the clan sweep. Run all four, in order.
+weekly deltas and the clan sweep; `0005_comparison_single_pass.sql` rewrites
+the comparison function so it survives a real population. Run all five, in
+order.
 
 ### 2. API key
 
@@ -183,6 +185,21 @@ opens any of it up.
   responses at 1,000 and does it silently: `.limit(20000)` returns 1,000 rows
   and no error. `selectPaged` in `worker/src/db.ts` exists for this, and it is
   not optional — the first live run swept 1,000 of 65,973 clans because of it.
+  **This applies to functions too**: `performance_comparison` returned 1,000 of
+  5,163 comparable players and drew a chart that looked entirely plausible.
+  `getComparison` pages the RPC, and the function's `ORDER BY` ends in
+  `player_tag` so the order is total — without a unique tiebreaker, ties come
+  back in a different order on each execution and rows duplicate or vanish
+  across page boundaries.
+- **The comparison is one grouped pass, deliberately.** It used to build
+  `offence`, `defence` and `latest` as separate CTEs and join them on
+  `player_tag`. Postgres cannot estimate a CTE's row count, assumed one row,
+  and chose a nested loop: 10.5 million comparisons to produce 4,600 rows from
+  a 14,916-row table, which blew the statement timeout on the second week of
+  real data. Offence and defence are now separated by `FILTER` on the
+  aggregates instead, and the descriptive columns come from the same pass —
+  2.7s to 34ms on that dataset, 3.9s to 133ms on a six-week one. Adding a join
+  between CTEs here will quietly reintroduce it.
 - **Snapshots are written with an explicit lookup, not an upsert.** The
   uniqueness rule is a partial index (`unique (league_id, season_id) where kind
   = 'final'`), and Postgres only infers a partial index for `ON CONFLICT` when
