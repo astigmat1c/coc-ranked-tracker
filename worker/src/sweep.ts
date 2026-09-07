@@ -572,10 +572,40 @@ async function main() {
       );
     }
 
-    await getDb()
+    const { error: flagErr } = await getDb()
       .from('snapshots')
       .update({ complete: true, player_count: inTier.length })
       .eq('id', snapshotId);
+
+    if (flagErr) {
+      throw new Error(
+        `marking snapshot ${snapshotId} complete failed: ${flagErr.message}. ` +
+          'The rows are all written, so re-running the sweep will finish the job.',
+      );
+    }
+
+    // Read the flag back rather than trusting the write.
+    //
+    // This one bit is what the entire site keys off: getTrackedLeagues,
+    // getSeasons, getLatestSnapshot and the comparison all filter
+    // complete = true. A write that failed here — or matched nothing — would
+    // leave a fully captured week invisible on the site while the run printed
+    // success, which is the most confusing failure this script can produce.
+    const { data: flagged, error: readErr } = await getDb()
+      .from('snapshots')
+      .select('complete, player_count')
+      .eq('id', snapshotId)
+      .single();
+
+    if (readErr) throw new Error(`re-reading snapshot ${snapshotId} failed: ${readErr.message}`);
+
+    if (!flagged?.complete) {
+      throw new Error(
+        `snapshot ${snapshotId} is still not marked complete after the update. ` +
+          `Its ${count} rows are written and correct, but nothing on the site will ` +
+          'show the week until the flag is set.',
+      );
+    }
 
     console.log(`done  tier ${tierId} / ${seasonId} — ${inTier.length} players verified`);
   }
