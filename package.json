@@ -12,6 +12,7 @@
     "probe": "tsx worker/src/probe-ranked.ts",
     "survey": "tsx worker/src/survey.ts",
     "probe:clans": "tsx worker/src/probe-clans.ts",
+    "probe:stars": "tsx worker/src/probe-stars.ts",
     "sweep": "tsx worker/src/sweep.ts"
   },
   "dependencies": {
