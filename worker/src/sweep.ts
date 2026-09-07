@@ -281,6 +281,87 @@ async function enrichWins(tags: string[]) {
 
 // ---------------------------------------------------------------------------
 
+/** How many ranking rows a snapshot currently holds. */
+export async function countSnapshotRows(snapshotId: number): Promise<number> {
+  const { count, error } = await getDb()
+    .from('ranking_entries')
+    .select('player_tag', { count: 'exact', head: true })
+    .eq('snapshot_id', snapshotId);
+
+  if (error) throw new Error(`counting rows for snapshot ${snapshotId} failed: ${error.message}`);
+  return count ?? 0;
+}
+
+/**
+ * Empties a snapshot so the run about to write it owns every row.
+ *
+ * `ranking_entries` is upserted on (snapshot_id, player_tag): it inserts and
+ * updates, but never removes. A second attempt at the same week therefore
+ * lands *on top of* whatever the first attempt left, and the two populations
+ * are never identical — a sweep reading 5,000 clans sees a different set of
+ * players than one reading 20,000. The survivors of the earlier attempt keep
+ * ranks assigned from a different field, so the week ends up holding two
+ * interleaved rankings and a row count that matches neither run. That is what
+ * failed verification on the second week: 9,709 rows present, 7,200 written.
+ *
+ * Clearing first makes the row set exactly what this run captured. The
+ * snapshot is flagged complete = false for the whole write, so the momentary
+ * gap is invisible to the site and to every delta computed against it.
+ *
+ * Returns how many rows were removed.
+ */
+export async function clearSnapshotRows(snapshotId: number): Promise<number> {
+  const before = await countSnapshotRows(snapshotId);
+  if (!before) return 0;
+
+  const { error } = await getDb().from('ranking_entries').delete().eq('snapshot_id', snapshotId);
+
+  if (error) {
+    const timedOut =
+      (error as { code?: string }).code === '57014' || /statement timeout/i.test(error.message);
+    if (!timedOut) throw new Error(`clearing snapshot ${snapshotId} failed: ${error.message}`);
+
+    // A statement timeout rolls the whole delete back, so repeating it makes no
+    // progress. Go row-group by row-group instead.
+    console.warn(`  delete of ${before} rows timed out; clearing in chunks`);
+    await clearInChunks(snapshotId);
+  }
+
+  const left = await countSnapshotRows(snapshotId);
+  if (left) {
+    throw new Error(
+      `snapshot ${snapshotId} still holds ${left} rows after being cleared; ` +
+        'refusing to write a mixed week on top of them',
+    );
+  }
+
+  return before;
+}
+
+/** Deletes a snapshot's rows a tag-group at a time, for when one statement cannot. */
+async function clearInChunks(snapshotId: number, chunk = 200) {
+  const rows = await selectPaged<{ player_tag: string }>((from, to) =>
+    getDb()
+      .from('ranking_entries')
+      .select('player_tag')
+      .eq('snapshot_id', snapshotId)
+      .order('player_tag', { ascending: true })
+      .range(from, to),
+  );
+
+  for (let i = 0; i < rows.length; i += chunk) {
+    const tags = rows.slice(i, i + chunk).map((r) => r.player_tag);
+    const { error } = await getDb()
+      .from('ranking_entries')
+      .delete()
+      .eq('snapshot_id', snapshotId)
+      .in('player_tag', tags);
+    if (error) {
+      throw new Error(`chunked clear of snapshot ${snapshotId} failed: ${error.message}`);
+    }
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
@@ -435,6 +516,15 @@ async function main() {
       'tag',
     );
 
+    // Make this run's row set authoritative for the week before writing it.
+    // See clearSnapshotRows: an upsert never removes, so a re-run that captures
+    // a different population than an earlier attempt at the same week would
+    // otherwise leave the difference behind.
+    const cleared = await clearSnapshotRows(snapshotId);
+    if (cleared) {
+      console.log(`cleared ${cleared} rows from an earlier attempt at ${seasonId}`);
+    }
+
     await upsertChunked(
       'ranking_entries',
       inTier.map(([tag, m], i) => {
@@ -473,12 +563,7 @@ async function main() {
     // fail partially, and a snapshot flagged complete with half its players is
     // worse than one that visibly failed — every week-over-week delta computed
     // against it would be wrong.
-    const { count, error: countErr } = await getDb()
-      .from('ranking_entries')
-      .select('player_tag', { count: 'exact', head: true })
-      .eq('snapshot_id', snapshotId);
-
-    if (countErr) throw new Error(`verification read failed: ${countErr.message}`);
+    const count = await countSnapshotRows(snapshotId);
 
     if (count !== inTier.length) {
       throw new Error(

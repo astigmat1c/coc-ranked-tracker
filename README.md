@@ -190,6 +190,16 @@ opens any of it up.
   index still guards against concurrent double inserts.
 - **A snapshot is only marked complete after its rows are counted back.** A
   partial week flagged complete would poison every delta computed against it.
+- **A re-run clears the week before writing it.** Ranking rows are upserted on
+  `(snapshot_id, player_tag)`, which inserts and updates but never removes, so a
+  second attempt at the same week lands on top of the first — and the two
+  populations are never identical, because a sweep of 5,000 clans sees a
+  different set of players than one of 20,000. Survivors of the earlier attempt
+  keep ranks assigned from a different field, leaving the week holding two
+  interleaved rankings. The second live week hit exactly this: 9,709 rows
+  present against 7,200 written. `clearSnapshotRows` empties the snapshot first,
+  while it is still flagged incomplete, so whatever the run captures is exactly
+  what the week holds.
 - **`raw` on a ranking row is deliberately tiny.** A `/players/{tag}` response
   is ~40KB of troops, heroes, equipment and achievements; storing it per player
   per week is tens of megabytes a run and blew Supabase's statement timeout on
