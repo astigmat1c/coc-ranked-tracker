@@ -69,6 +69,23 @@ export interface Reconstruction {
   unexplained: number;
   /** Windows spanning the weekly reset, skipped rather than read as a huge loss. */
   resets: number;
+
+  // ---- audit ----
+  //
+  // The counters say how many battles happened; the classification says how
+  // many were readable. Comparing the two is a self-check that needs no
+  // in-game screenshot: if 30 attacks went by and 30 were classified, nothing
+  // was missed, whatever the stars turn out to be. It also quantifies the one
+  // thing polling cannot fix — battles that happened before the first poll.
+
+  /** Attacks the counter moved through, across all non-reset windows. */
+  counterAttacks: number;
+  /** Defences the counter moved through. */
+  counterDefences: number;
+  /** Total trophy movement observed, for reconciliation. */
+  trophyMovement: number;
+  /** Trophy movement attributed to a classified battle. */
+  trophyResolved: number;
 }
 
 /**
@@ -86,6 +103,10 @@ export function reconstruct(polls: Poll[]): Reconstruction {
     ambiguousEvents: 0,
     unexplained: 0,
     resets: 0,
+    counterAttacks: 0,
+    counterDefences: 0,
+    trophyMovement: 0,
+    trophyResolved: 0,
   };
 
   for (let i = 1; i < polls.length; i++) {
@@ -116,6 +137,12 @@ export function reconstruct(polls: Poll[]): Reconstruction {
     const dd = cur.defence_count - prev.defence_count;
     const dt = cur.trophies - prev.trophies;
 
+    // Counted before any classification decision, so the audit reflects what
+    // happened rather than what was readable.
+    out.counterAttacks += da;
+    out.counterDefences += dd;
+    out.trophyMovement += dt;
+
     if (da === 0 && dd === 0) {
       if (dt !== 0) out.unexplained++;
       continue;
@@ -126,6 +153,8 @@ export function reconstruct(polls: Poll[]): Reconstruction {
       out.ambiguousEvents += da + dd;
       continue;
     }
+
+    out.trophyResolved += dt;
 
     if (da === 1) {
       out.battles.push({
@@ -214,14 +243,37 @@ async function main() {
     const r = reconstruct(polls);
     const atk = summarise(r.battles, 'attack');
     const def = summarise(r.battles, 'defence');
-    const total = atk.count + def.count + r.ambiguousEvents;
+    const events = r.counterAttacks + r.counterDefences;
+
+    // What the counters say happened, versus what the polls could read.
+    const firstPoll = polls[0];
+    const lastPoll = polls[polls.length - 1];
+    const missedBefore =
+      (firstPoll.attack_count ?? 0) + (firstPoll.defence_count ?? 0);
 
     console.log(
-      `resolved ${atk.count + def.count} of ${total} events ` +
-        `(${pct(atk.count + def.count, total)}); ` +
-        `${r.ambiguous} ambiguous window(s) holding ${r.ambiguousEvents} event(s); ` +
+      `counters moved through ${r.counterAttacks} attacks and ${r.counterDefences} defences; ` +
+        `${atk.count + def.count} classified (${pct(atk.count + def.count, events)})`,
+    );
+    console.log(
+      `  ${r.ambiguous} ambiguous window(s) holding ${r.ambiguousEvents} event(s); ` +
         `${r.unexplained} unexplained trophy move(s); ${r.resets} reset boundary/ies`,
     );
+    console.log(
+      `  trophies ${firstPoll.trophies} -> ${lastPoll.trophies} ` +
+        `(moved ${r.trophyMovement}, ${r.trophyResolved} of it attributed to a classified battle)`,
+    );
+
+    // Polling cannot recover what happened before it started. Say how much that
+    // was, so the totals are compared against the right thing.
+    if (missedBefore > 0) {
+      console.log(
+        `  NOTE: at the first poll this player was already on ` +
+          `${firstPoll.attack_count} attacks and ${firstPoll.defence_count} defences. ` +
+          `Those ${missedBefore} battles predate the watch and cannot be reconstructed — ` +
+          `compare against the in-game screen MINUS them, not the full week.`,
+      );
+    }
 
     console.log(
       `\nATTACKS   ${atk.count} attacks, ${atk.stars} stars, avg ${atk.average.toFixed(2)}`,
