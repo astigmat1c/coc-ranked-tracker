@@ -45,8 +45,9 @@ the star columns and the function behind the offence/defence page;
 `0003_explicit_weeks.sql` replaces that function with the version taking
 explicit week lists; `0004_clan_sweep.sql` moves everything onto league tiers,
 weekly deltas and the clan sweep; `0005_comparison_single_pass.sql` rewrites
-the comparison function so it survives a real population. Run all five, in
-order.
+the comparison function so it survives a real population;
+`0006_capture_before_reset.sql` records how close to the weekly reset a
+capture was taken. Run all six, in order.
 
 ### 2. API key
 
@@ -99,9 +100,11 @@ key must *not* be set here.
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and variables `COC_API_BASE`,
 `TRACKED_LEAGUE_IDS`. `.github/workflows/ingest.yml` then runs itself.
 
-The ranked week resets Monday 13:00 AWST = **Monday 05:00 UTC**, so the workflow
-fires at 05:30, 09:30 and 15:30 UTC on Mondays; the sweep is idempotent per
-league-week, so a repeat just refreshes the same snapshot. Clan rediscovery is
+The ranked week resets Monday 13:00 AWST = **Monday 05:00 UTC**, and attack and
+defence counters zero at that instant — so the workflow fires *before* it, at
+03:20 and 04:15 UTC on Mondays. A capture taken after the reset records an
+empty week; see the findings section. The sweep is idempotent per league-week,
+so a repeat just refreshes the same snapshot. Clan rediscovery is
 the expensive phase and runs only on the first Monday of the month. You can also
 run it by hand from the Actions tab, with or without discovery.
 
@@ -225,6 +228,16 @@ opens any of it up.
 - **Upserts halve and retry on a statement timeout.** How many rows fit inside
   the timeout depends on payload size and index count, which no fixed constant
   gets right — so a heavy batch slows down rather than failing the run.
+- **A capture must happen before the reset.** `attackWins` and `defenseWins`
+  are counters for the current ranked week and they zero at the Monday 05:00
+  UTC boundary, along with trophies. A sweep at 11:47 UTC on a Monday found
+  **9,752 of 9,753 players on zero attacks** — a whole week recorded as
+  nothing. A mid-week sweep is no better: the Thursday capture before it holds
+  three days of a seven-day week, 73% of players on zero. `snapshots.minutes_to_reset`
+  records the distance to the boundary and the `weekly_snapshots` view keeps
+  only captures taken within two hours of it; the sweep aborts outright if the
+  week rolls over mid-run, since that would mix pre- and post-reset readings
+  into one snapshot.
 - **Weekly figures are deltas.** `attack_wins` is stored as reported; the
   per-week number is the change against the previous snapshot. If the counter
   resets at the weekly boundary the new value *is* the week's figure, and

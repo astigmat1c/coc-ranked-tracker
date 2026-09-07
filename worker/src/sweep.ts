@@ -86,6 +86,21 @@ function parseArgs(argv: string[]) {
  * between two boundaries belongs to the week that began at the earlier one, so
  * a run on Tuesday and a re-run on Thursday land in the same season.
  */
+/**
+ * The start and end instants of the ranked week containing `when`.
+ *
+ * This matters more than it looks. A player's attackWins and defenseWins are
+ * counters for the current ranked week and they zero at the boundary — proven
+ * on live data: a sweep at 11:47 UTC on a Monday, under seven hours after the
+ * reset, found 9,752 of 9,753 players on zero attacks. A capture is only a
+ * record of a week if it is taken *before* that week's reset.
+ */
+export function seasonBoundsFor(when: Date): { start: Date; end: Date } {
+  const start = new Date(`${seasonIdFor(when)}T05:00:00.000Z`);
+  const end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000);
+  return { start, end };
+}
+
 export function seasonIdFor(when: Date): string {
   const d = new Date(when);
   const day = d.getUTCDay();                  // 0 Sun … 1 Mon
@@ -378,9 +393,26 @@ async function main() {
   const maxEnrich = Number(args['max-enrich'] ?? process.env.MAX_ENRICH ?? 25000);
   const capturedAt = new Date();
   const seasonId = seasonIdFor(capturedAt);
+  const bounds = seasonBoundsFor(capturedAt);
+  const minutesToReset = Math.round((bounds.end.getTime() - capturedAt.getTime()) / 60000);
 
   console.log(`tracking tiers: ${[...tierIds].join(', ')}`);
   console.log(`season: ${seasonId} (week beginning Monday 05:00 UTC)`);
+  console.log(
+    `reset in ${minutesToReset} min (${bounds.end.toISOString().replace('.000Z', 'Z')})`,
+  );
+
+  // A sweep is only a record of a week if it happens before that week's
+  // counters zero. Say so loudly rather than quietly storing a partial week
+  // that looks exactly like a complete one in the database.
+  if (minutesToReset > 120 && !args['allow-partial']) {
+    console.warn(
+      `\nWARNING: this run is ${Math.round(minutesToReset / 60)} hours before the reset, so ` +
+        'attack and defence counters are mid-week, not final.\n' +
+        '         The snapshot will be recorded as partial and excluded from weekly figures.\n' +
+        '         The scheduled run fires shortly before the reset, which is the one that counts.',
+    );
+  }
 
   const countries = await syncReferenceData();
 
@@ -493,6 +525,22 @@ async function main() {
     // (bare column names) cannot express. So look the row up and insert or
     // update explicitly. The index still guards against a concurrent double
     // insert; we simply cannot route through ON CONFLICT.
+    // Refuse to write a snapshot that straddles the reset.
+    //
+    // The sweep and enrich phases take twenty-odd minutes. A run that starts
+    // before the boundary and finishes after it reads some players with the
+    // finished week's counters and others with a fresh week's zeros, and the
+    // result is a snapshot that is wrong in a way nothing downstream could
+    // detect. Better to lose the run than to record that.
+    const seasonNow = seasonIdFor(new Date());
+    if (seasonNow !== seasonId) {
+      throw new Error(
+        `the ranked week rolled over mid-run (started in ${seasonId}, now in ${seasonNow}). ` +
+          'Some players were read before the reset and some after, so this capture is a ' +
+          'mixture of two weeks and is being discarded. Start the run earlier.',
+      );
+    }
+
     const header = {
       league_id: tierId,
       season_id: seasonId,
@@ -502,6 +550,11 @@ async function main() {
       method: 'clan_sweep',
       clans_swept: clansRead,
       player_count: inTier.length,
+      // How long the week still had to run when this was taken. A capture with
+      // hours left on the clock holds mid-week counters; only one taken close
+      // to the boundary is a record of the finished week. Stored rather than
+      // inferred from captured_at so a query can filter on it directly.
+      minutes_to_reset: minutesToReset,
       complete: false,
     };
 
