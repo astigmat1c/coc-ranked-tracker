@@ -13,7 +13,9 @@
     "survey": "tsx worker/src/survey.ts",
     "probe:clans": "tsx worker/src/probe-clans.ts",
     "probe:stars": "tsx worker/src/probe-stars.ts",
-    "sweep": "tsx worker/src/sweep.ts"
+    "sweep": "tsx worker/src/sweep.ts",
+    "watch": "tsx worker/src/watch.ts",
+    "classify": "tsx worker/src/classify.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",

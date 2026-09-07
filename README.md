@@ -159,6 +159,20 @@ probing. It is worth reading before changing anything:
   `/clans/{tag}` call classifies up to 50 players, clan search pages well past
   200, and measurement gave ~525 Legend II players per 1,000 clan calls. This
   is the route the sweep takes.
+- **Stars are not served, but they are recoverable.** No endpoint carries a
+  star count — see the probe results below. But every ranked battle splits a
+  fixed **40 trophies** between attacker and defender, with stars and
+  destruction setting the split: a 3-star attack is 40, a 2-star is roughly
+  20–32, and the defender keeps whatever the attacker did not take, so holding
+  at zero stars is the full 40 and being three-starred is nothing. That makes a
+  single battle's trophy movement a star count rather than a proxy for one. Poll
+  a player often enough that a window contains exactly one event and the star
+  falls out; `worker/src/classify.ts` does this and reproduces a known week
+  exactly — 30 attacks as 22/8/0/0 for 2.73, 29 defences as 12/13/3/1 for 2.24.
+  Cadence is the constraint, not correctness: attacks are bursty, and over 200
+  simulated weeks a 30-minute cadence resolves only 57% of events (star average
+  off by 0.11) against 70% at 15 minutes. Hence `--loop`, which polls from
+  inside a scheduled run instead of relying on the scheduler.
 - **Stars do not exist anywhere.** Not on the player record, not on a tier, not
   on any ranking or member row. Every response carries `attackWins` and
   `defenseWins` — win *counts*. An average like "2.69 stars per attack" cannot
@@ -260,6 +274,8 @@ opens any of it up.
 |---|---|
 | `npm run dev` / `build` / `start` | the Next.js site |
 | `npm run sweep` | the weekly ingest: read clans, capture the week |
+| `npm run watch` | poll a watchlist; `-- --loop 58 --every 120` to stay alive |
+| `npm run classify -- --tags "#TAG"` | reconstruct battles and stars from polls |
 | `npm run sweep -- --discover` | rebuild the clan list first (slow, monthly) |
 | `npm run discover` | dump leagues, tiers, seasons, locations |
 | `npm run probe -- --player "#TAG"` | re-test every ranked endpoint |
