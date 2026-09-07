@@ -449,7 +449,44 @@ async function main() {
       for (const r of prevRows) prevRank.set(r.player_tag, r.rank);
     }
 
-    // The uniqueness rule here is a PARTIAL index —
+    // Reference rows first. They are shared across weeks and carry no snapshot
+    // identity, so writing them cannot damage a week that is already published.
+    const clanRows = new Map<string, object>();
+    for (const [, m] of inTier) {
+      if (!clanRows.has(m.clanTag)) {
+        clanRows.set(m.clanTag, { tag: m.clanTag, name: m.clanName, last_seen_at: capturedAt.toISOString() });
+      }
+    }
+    await upsertChunked('clans', [...clanRows.values()], 'tag');
+
+    await upsertChunked(
+      'players',
+      inTier.map(([tag, m]) => ({
+        tag,
+        name: m.name,
+        exp_level: m.expLevel ?? null,
+        town_hall_level: m.townHallLevel ?? null,
+        clan_tag: m.clanTag,
+        league_id: tierId,
+        last_seen_at: capturedAt.toISOString(),
+        // The clan row already carries TH, so the old enrich pass is redundant.
+        enriched_at: capturedAt.toISOString(),
+      })),
+      'tag',
+    );
+
+    // Everything from here to the complete flag is the destructive part: it
+    // un-publishes the week, replaces its rows, and publishes it again. Keep it
+    // as short as possible and start it as late as possible.
+    //
+    // This block used to sit at the top of the loop, which meant a re-run
+    // un-published the week before doing minutes of other work — so a run that
+    // died anywhere in between took a perfectly good published week off the
+    // site with it. That is what happened on the second week: a scheduled run
+    // rewrote the header, failed, and left the previous run's rows stranded
+    // behind complete = false.
+    //
+    // The uniqueness rule is a PARTIAL index —
     //   unique (league_id, season_id) where kind = 'final'
     // — and Postgres only infers a partial index for ON CONFLICT when the
     // statement repeats its WHERE predicate, which PostgREST's onConflict
@@ -491,30 +528,6 @@ async function main() {
       if (error || !data) throw new Error(`snapshot insert failed: ${error?.message}`);
       snapshotId = data.id as number;
     }
-
-    const clanRows = new Map<string, object>();
-    for (const [, m] of inTier) {
-      if (!clanRows.has(m.clanTag)) {
-        clanRows.set(m.clanTag, { tag: m.clanTag, name: m.clanName, last_seen_at: capturedAt.toISOString() });
-      }
-    }
-    await upsertChunked('clans', [...clanRows.values()], 'tag');
-
-    await upsertChunked(
-      'players',
-      inTier.map(([tag, m]) => ({
-        tag,
-        name: m.name,
-        exp_level: m.expLevel ?? null,
-        town_hall_level: m.townHallLevel ?? null,
-        clan_tag: m.clanTag,
-        league_id: tierId,
-        last_seen_at: capturedAt.toISOString(),
-        // The clan row already carries TH, so the old enrich pass is redundant.
-        enriched_at: capturedAt.toISOString(),
-      })),
-      'tag',
-    );
 
     // Make this run's row set authoritative for the week before writing it.
     // See clearSnapshotRows: an upsert never removes, so a re-run that captures
