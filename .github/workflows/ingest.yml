@@ -1,22 +1,26 @@
 name: Weekly ranked sweep
 
-# The ranked week resets Monday 13:00 AWST = Monday 05:00 UTC, and a player's
-# attack and defence counters ZERO at that moment. A capture is only a record
-# of the week if it happens BEFORE the reset, so these fire in the hour before
-# it, not after: 03:20 as a first attempt and 04:15 as the one that counts.
+# The ranked week, in UTC:
 #
-# This was learned the hard way. Runs at 05:30 and 09:30 captured 9,752 of
-# 9,753 players on zero attacks — a whole week of nothing, stored as if it
-# were data.
+#   Mon 05:00   counters and trophies zero; signup and placement open
+#   Mon 17:00   battles begin (Tue 01:00 AWST) — nothing happens before this
+#   Mon 05:00   battles end and everything zeroes again
 #
-# A sweep of 20k clans plus enrichment takes about fifteen minutes, so 04:15
-# lands comfortably inside the boundary; the sweep aborts rather than writing
-# if the week rolls over mid-run. GitHub's scheduler can be ten minutes late,
-# which the margin also absorbs.
+# So play runs right up to the reset, and a capture is only a record of the
+# week if it lands before it. Learned the hard way: runs at 05:30 and 09:30
+# captured 9,752 of 9,753 players on zero attacks — not a partly-elapsed week
+# but one that had not started.
+#
+# Two attempts, both pre-reset. 04:00 is insurance; 04:35 is the one that
+# counts, landing as close to the end of play as a fifteen-minute sweep safely
+# can. Every minute earlier is attacks missed, every minute later risks
+# crossing the boundary — and the sweep aborts rather than write a capture
+# that read some players before the reset and some after, so a late 04:35 run
+# fails harmlessly and 04:00's snapshot stands.
 on:
   schedule:
-    - cron: '20 3 * * 1'
-    - cron: '15 4 * * 1'
+    - cron: '0 4 * * 1'
+    - cron: '35 4 * * 1'
   workflow_dispatch:
     inputs:
       discover:
@@ -73,7 +77,7 @@ jobs:
   # Clan membership churns slowly, so rediscovery is monthly rather than weekly.
   # It is the expensive phase and the weekly run reuses whatever it stored.
   discover:
-    if: github.event_name == 'schedule' && github.event.schedule == '15 4 * * 1'
+    if: github.event_name == 'schedule' && github.event.schedule == '35 4 * * 1'
     runs-on: ubuntu-latest
     concurrency:
       group: discover

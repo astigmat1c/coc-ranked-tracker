@@ -9,6 +9,11 @@
  * captured_at, which makes the windows line up across the watchlist so an
  * analysis reasons about the same interval for everybody.
  *
+ * The ranked week runs Monday 17:00 UTC to the following Monday 05:00 UTC —
+ * battles begin twelve hours after the counters zero, and run right up to the
+ * next reset. Polling through the quiet signup window costs nothing and means
+ * the first battle of the week is caught with a clean zero baseline behind it.
+ *
  * Cadence decides how much of a week can be read at all. A window holding two
  * events cannot be split, and attacks are bursty — people spend their thirty in
  * a few sessions rather than evenly. Simulated over 200 weeks with seven

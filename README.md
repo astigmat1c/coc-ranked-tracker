@@ -100,11 +100,14 @@ key must *not* be set here.
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and variables `COC_API_BASE`,
 `TRACKED_LEAGUE_IDS`. `.github/workflows/ingest.yml` then runs itself.
 
-The ranked week resets Monday 13:00 AWST = **Monday 05:00 UTC**, and attack and
-defence counters zero at that instant — so the workflow fires *before* it, at
-03:20 and 04:15 UTC on Mondays. A capture taken after the reset records an
-empty week; see the findings section. The sweep is idempotent per league-week,
-so a repeat just refreshes the same snapshot. Clan rediscovery is
+The ranked week, in UTC: counters zero at **Monday 05:00** and signup opens,
+battles begin at **Monday 17:00** (Tuesday 01:00 AWST), and play runs right up
+to the following Monday 05:00, when everything zeroes again. So the workflow
+fires *before* the reset — 04:00 as insurance and 04:35 as the capture that
+counts, as close to the end of play as a fifteen-minute sweep safely allows. A
+capture taken after the reset records an empty week; see the findings section.
+The sweep is idempotent per league-week, so a repeat just refreshes the same
+snapshot. Clan rediscovery is
 the expensive phase and runs only on the first Monday of the month. You can also
 run it by hand from the Actions tab, with or without discovery.
 

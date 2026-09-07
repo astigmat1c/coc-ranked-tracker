@@ -303,6 +303,15 @@ async function main() {
       'attack histogram and average match, the classification is sound and it can ' +
       'be applied to everyone.',
   );
+  console.log(
+    'Two expected discrepancies, neither a fault:\n' +
+      '  · A player who received fewer than the full complement of defences is given ' +
+      'an autodefence at the end, scored as the average of the real ones. It never ' +
+      'happened, so no poll window contains it — the screen can show one more defence ' +
+      'than this reconstruction, and the reconstruction is the one describing real battles.\n' +
+      '  · Battles inside a window that also held another battle are counted but not ' +
+      'classified. The line above says how many.',
+  );
 }
 
 if (require.main === module) {
