@@ -74,6 +74,13 @@ function findNumbers(body: unknown, wanted: number[], label: string) {
   return hits.length;
 }
 
+/** Season ids are Unix seconds on a Monday 05:00 UTC boundary; 0 means unplaced. */
+function stamp(v: unknown): string {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return `${v} (unset — not placed in a season yet)`;
+  return `${n} = ${new Date(n * 1000).toISOString().replace('.000Z', 'Z')}`;
+}
+
 interface PlayerRecord {
   tag: string;
   name: string;
@@ -83,8 +90,11 @@ interface PlayerRecord {
   leagueTier?: { id: number; name: string };
   clan?: { tag: string };
   currentLeagueGroupTag?: string;
+  previousLeagueGroupTag?: string;
   currentLeagueSeasonId?: number | string;
   previousLeagueSeasonId?: number | string;
+  league?: unknown;
+  playerHouse?: unknown;
   [k: string]: unknown;
 }
 
@@ -116,9 +126,12 @@ async function main() {
   console.log(`  name ${player.name}, trophies ${player.trophies}`);
   console.log(`  attackWins ${player.attackWins}, defenseWins ${player.defenseWins}`);
   console.log(`  leagueTier ${player.leagueTier?.id} (${player.leagueTier?.name})`);
-  console.log(`  currentLeagueGroupTag  ${player.currentLeagueGroupTag ?? '—'}`);
-  console.log(`  currentLeagueSeasonId  ${player.currentLeagueSeasonId ?? '—'}`);
-  console.log(`  previousLeagueSeasonId ${player.previousLeagueSeasonId ?? '—'}`);
+  console.log(`  currentLeagueGroupTag   ${player.currentLeagueGroupTag ?? '—'}`);
+  console.log(`  previousLeagueGroupTag  ${player.previousLeagueGroupTag ?? '—'}`);
+  console.log(`  currentLeagueSeasonId   ${stamp(player.currentLeagueSeasonId)}`);
+  console.log(`  previousLeagueSeasonId  ${stamp(player.previousLeagueSeasonId)}`);
+  console.log(`  league        ${JSON.stringify(player.league ?? null)}`);
+  console.log(`  playerHouse   ${player.playerHouse ? 'present' : '—'}`);
 
   // Every top-level key, so a newly added field cannot hide.
   console.log(`  top-level keys: ${Object.keys(player).sort().join(', ')}`);
@@ -131,7 +144,17 @@ async function main() {
   // The group tag is the ~100-player weekly pool the Ranked screen scores
   // against, so if a per-attack breakdown exists anywhere it is likeliest to
   // hang off that.
-  const group = player.currentLeagueGroupTag;
+  // Both group tags, not just the current one.
+  //
+  // Straight after the Monday 05:00 UTC reset a player has no current group —
+  // currentLeagueGroupTag is absent and currentLeagueSeasonId is 0 until they
+  // attack. previousLeagueGroupTag is the pool they just finished, which is
+  // precisely the week the Ranked results screen is showing. The first version
+  // of this probe only looked at the current tag, so on a Monday it skipped
+  // every group endpoint without saying so.
+  const groups = [player.currentLeagueGroupTag, player.previousLeagueGroupTag].filter(
+    (g): g is string => typeof g === 'string' && g.length > 0,
+  );
   const season = player.currentLeagueSeasonId;
   const prevSeason = player.previousLeagueSeasonId;
   const tier = player.leagueTier?.id;
@@ -150,30 +173,51 @@ async function main() {
     `/players/${p}/leagueseason`,
   ];
 
-  if (group) {
+  // The group is the ~100-player weekly pool the Ranked screen scores against.
+  // If a per-attack or per-star breakdown exists anywhere, it hangs off this —
+  // by analogy with CWL, where /clanwarleagues/groups/{tag} leads to rounds,
+  // war tags, and finally per-member attacks carrying stars.
+  for (const group of groups) {
     const g = encodeTag(group);
     candidates.push(
       `/leaguegroups/${g}`,
       `/leaguegroups/${g}/rounds`,
       `/leaguegroups/${g}/rankings`,
+      `/leaguegroups/${g}/rankings/players`,
       `/leaguegroups/${g}/members`,
-      `/rankedgroups/${g}`,
       `/leaguegroups/${g}/players`,
+      `/leaguegroups/${g}/wars`,
+      `/rankedgroups/${g}`,
+      `/leagues/groups/${g}`,
+      `/clanwarleagues/groups/${g}`,
+      `/players/${p}/leaguegroups/${g}`,
     );
   }
 
-  if (season) {
-    candidates.push(`/leagueseasons/${season}`, `/leagueseasons/${season}/rankings/players`);
-    if (tier) candidates.push(`/leaguetiers/${tier}/seasons/${season}/rankings/players`);
-  }
-  if (prevSeason && tier) {
-    candidates.push(`/leaguetiers/${tier}/seasons/${prevSeason}/rankings/players`);
+  for (const s of [season, prevSeason]) {
+    if (!Number(s)) continue;
+    candidates.push(`/leagueseasons/${s}`, `/leagueseasons/${s}/rankings/players`);
+    if (tier) {
+      candidates.push(
+        `/leaguetiers/${tier}/seasons/${s}/rankings/players`,
+        `/leaguetiers/${tier}/seasons/${s}`,
+      );
+    }
+    candidates.push(`/players/${p}/leagueseasons/${s}`);
   }
   if (tier) {
     candidates.push(`/leaguetiers/${tier}/seasons`, `/leaguetiers/${tier}/rankings/players`);
   }
 
-  console.log(`\nprobing ${candidates.length} candidate endpoints\n`);
+  if (!groups.length) {
+    console.log(
+      '\nNOTE: this player has neither a current nor a previous league group tag, so ' +
+        'every group endpoint is being skipped. Re-run mid-week, after some ranked ' +
+        'attacks, when currentLeagueGroupTag is populated.',
+    );
+  }
+
+  console.log(`\nprobing ${candidates.length} candidate endpoints (${groups.length} group tag(s))\n`);
 
   const reachable: { path: string; hits: number }[] = [];
 
