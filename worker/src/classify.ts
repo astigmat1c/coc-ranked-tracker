@@ -1,28 +1,65 @@
 /**
  * Turn a series of polls into classified battles.
  *
- *   npm run classify -- --tags "#9C8GQ92UG"
+ *   npm run classify -- --tags "#Y0992RGYY"
  *   npm run classify -- --season 2026-09-07 --events
  *
- * Every battle splits a fixed 40 trophies between attacker and defender, and
- * the split is set by stars and destruction. So a window containing exactly one
- * event carries that event's star count in its trophy movement.
+ * WHAT THE COUNTERS ACTUALLY MEAN
  *
- * The bands below come from observed play and are provisional — which is why
- * --events prints every raw value. If the awards really are banded this way the
- * printed values cluster and the bands can be tightened; if they are not, the
- * clustering fails visibly rather than producing confident nonsense.
+ * Established against a real battle log (VI, #Y0992RGYY, week of 7 September):
+ * 30 attacks totalling +947, six defences totalling +30, 977 trophies — and
+ * the API reporting attackWins 30, defenseWins 0.
+ *
+ *   attackWins   attacks WON, meaning one star or better. Not attacks used.
+ *                All 30 of VI's attacks scored, so the two coincided for him;
+ *                a 0-star attack would not increment it.
+ *   defenseWins  defences WON, meaning the attacker took nothing. VI faced six
+ *                defences and won none of them, hence 0. It is NOT a count of
+ *                defences received, which was the original assumption and is
+ *                wrong.
+ *   trophies     a running total that only ever rises. Both attacking and
+ *                defending add 0..40, so the sign of a change says nothing
+ *                about which kind of battle caused it.
+ *
+ * HOW A BATTLE IS IDENTIFIED
+ *
+ * Every battle splits a fixed 40 between attacker and defender, so what one
+ * side gains the other loses out on:
+ *
+ *   attacker  3 stars -> 40      defender concedes 3 stars ->  0
+ *             2 stars -> 20..32                    2 stars -> 8..20
+ *             1 star  -> 1..19                     1 star  -> 21..39
+ *             0 stars -> 0                         0 stars -> 40
+ *
+ * With attackWins rising by one, the window holds an attack and its trophy
+ * change is that attack's award. With no counter moving but trophies rising,
+ * nobody attacked — so the player was attacked, and what they kept is 40 minus
+ * what the attacker took. That inference is corroborated by five watched
+ * players sitting on 0 attacks and 0 defence wins with 21 to 75 trophies: they
+ * had not attacked at all, so every trophy came from being attacked.
+ *
+ * THE BLIND SPOT, STATED PLAINLY
+ *
+ * A defence where the attacker three-stars you pays +0 and wins you nothing.
+ * No counter moves and no trophy moves, so it is invisible — three of VI's six
+ * defences were exactly this. Defence figures from polling are therefore
+ * incomplete in a way that flatters the player, and the report says so rather
+ * than presenting an average computed from the defences that happened to go
+ * well. A 0-star attack is invisible for the same reason, though far rarer.
+ *
+ * Offence has no such hole: every attack that scores anything is seen.
  */
 import 'dotenv/config';
 import { getDb, selectPaged } from './db.js';
 
+/** The most a single battle can move either player's total. */
+export const BATTLE_TROPHIES = 40;
+
 /**
- * Attacker's trophy gain -> stars.
+ * Attacker's trophy gain -> stars scored.
  *
- * A 3-star is 40. A 2-star runs roughly 20–32 with destruction deciding where
- * in the band. Below that is a 1-star, and a 0-star earns nothing. The 33–39
- * gap is treated as a high 2-star rather than a low 3-star, since 40 was
- * described as the 3-star value exactly.
+ * Bands confirmed against VI's battle log: every +40 tile shows three stars,
+ * +20 through +32 show two, and +13/+14 show one.
  */
 export function starsFromAttackerGain(gain: number): 0 | 1 | 2 | 3 {
   if (gain >= 40) return 3;
@@ -31,15 +68,9 @@ export function starsFromAttackerGain(gain: number): 0 | 1 | 2 | 3 {
   return 0;
 }
 
-/**
- * Defender's trophy gain -> stars conceded.
- *
- * The inverse, via the 40-trophy split: what the defender keeps is what the
- * attacker did not take. Holding at zero stars is the full 40; being
- * three-starred is nothing.
- */
+/** Defender's trophy gain -> stars conceded, via the 40-trophy split. */
 export function starsConcededFromDefenderGain(gain: number): 0 | 1 | 2 | 3 {
-  return starsFromAttackerGain(40 - gain);
+  return starsFromAttackerGain(BATTLE_TROPHIES - gain);
 }
 
 export interface Poll {
@@ -55,56 +86,45 @@ export type EventKind = 'attack' | 'defence';
 export interface Battle {
   at: string;
   kind: EventKind;
+  /** Trophies this player gained from it. */
   trophyDelta: number;
+  /** Attack: stars scored. Defence: stars conceded. */
   stars: 0 | 1 | 2 | 3;
 }
 
 export interface Reconstruction {
   battles: Battle[];
-  /** Windows holding more than one event; the trophy change cannot be split. */
+  /** Windows whose trophy change cannot be attributed to one battle. */
   ambiguous: number;
-  /** Events inside those windows, so coverage can be stated honestly. */
   ambiguousEvents: number;
-  /** Trophies moved with no attack or defence to explain them. */
-  unexplained: number;
-  /** Windows spanning the weekly reset, skipped rather than read as a huge loss. */
+  /** Windows spanning the weekly reset. */
   resets: number;
 
   // ---- audit ----
-  //
-  // The counters say how many battles happened; the classification says how
-  // many were readable. Comparing the two is a self-check that needs no
-  // in-game screenshot: if 30 attacks went by and 30 were classified, nothing
-  // was missed, whatever the stars turn out to be. It also quantifies the one
-  // thing polling cannot fix — battles that happened before the first poll.
-
-  /** Attacks the counter moved through, across all non-reset windows. */
-  counterAttacks: number;
-  /** Defences the counter moved through. */
-  counterDefences: number;
-  /** Total trophy movement observed, for reconciliation. */
+  /** How far attackWins moved: attacks that scored at least one star. */
+  attackWinsSeen: number;
+  /** How far defenseWins moved: defences where the attacker took nothing. */
+  defenceWinsSeen: number;
   trophyMovement: number;
-  /** Trophy movement attributed to a classified battle. */
   trophyResolved: number;
 }
 
 /**
  * Walk consecutive polls and resolve what happened between them.
  *
- * Only windows with exactly one event are classified. A window holding an
- * attack and a defence together cannot be split — the trophy change is the sum
- * of two unknowns — so it is counted, not guessed at. Reporting how many events
- * were lost that way is what makes the resulting average honest.
+ * A window is only classified when one battle can explain it. Since a single
+ * battle can move a player by at most 40, a larger change means two or more
+ * battles landed together and the trophies cannot be split between them — such
+ * a window is counted, never guessed at.
  */
 export function reconstruct(polls: Poll[]): Reconstruction {
   const out: Reconstruction = {
     battles: [],
     ambiguous: 0,
     ambiguousEvents: 0,
-    unexplained: 0,
     resets: 0,
-    counterAttacks: 0,
-    counterDefences: 0,
+    attackWinsSeen: 0,
+    defenceWinsSeen: 0,
     trophyMovement: 0,
     trophyResolved: 0,
   };
@@ -121,13 +141,13 @@ export function reconstruct(polls: Poll[]): Reconstruction {
       continue;
     }
 
-    // The weekly reset zeroes trophies and both counters. A window spanning it
-    // has no meaning: the counters go backwards and the trophy change is the
-    // reset, not a battle.
+    // The reset zeroes trophies and both counters, so a window spanning it
+    // describes the reset rather than a battle.
     if (
       cur.season_id !== prev.season_id ||
       cur.attack_count < prev.attack_count ||
-      cur.defence_count < prev.defence_count
+      cur.defence_count < prev.defence_count ||
+      cur.trophies < prev.trophies
     ) {
       out.resets++;
       continue;
@@ -137,26 +157,26 @@ export function reconstruct(polls: Poll[]): Reconstruction {
     const dd = cur.defence_count - prev.defence_count;
     const dt = cur.trophies - prev.trophies;
 
-    // Counted before any classification decision, so the audit reflects what
-    // happened rather than what was readable.
-    out.counterAttacks += da;
-    out.counterDefences += dd;
+    out.attackWinsSeen += da;
+    out.defenceWinsSeen += dd;
     out.trophyMovement += dt;
 
-    if (da === 0 && dd === 0) {
-      if (dt !== 0) out.unexplained++;
-      continue;
-    }
+    // Nothing observable happened. Note this is also what a three-starred
+    // defence and a zero-star attack look like — see the blind spot above.
+    if (da === 0 && dd === 0 && dt === 0) continue;
 
-    if (da + dd > 1) {
+    // Two counters moving, or more trophies than one battle can award, means
+    // several battles shared the window.
+    if (da + dd > 1 || dt > BATTLE_TROPHIES) {
       out.ambiguous++;
-      out.ambiguousEvents += da + dd;
+      out.ambiguousEvents += Math.max(da + dd, Math.ceil(dt / BATTLE_TROPHIES));
       continue;
     }
 
     out.trophyResolved += dt;
 
     if (da === 1) {
+      // An attack that scored. Its award is the whole trophy change.
       out.battles.push({
         at: cur.captured_at,
         kind: 'attack',
@@ -164,6 +184,9 @@ export function reconstruct(polls: Poll[]): Reconstruction {
         stars: starsFromAttackerGain(dt),
       });
     } else {
+      // Either a defence won outright (dd === 1, the full 40 kept) or, with no
+      // counter moving at all, a defence that conceded something. Both are the
+      // player being attacked, and both are read the same way.
       out.battles.push({
         at: cur.captured_at,
         kind: 'defence',
@@ -206,15 +229,18 @@ function parseArgs(argv: string[]) {
   return args;
 }
 
-const pct = (n: number, d: number) => (d ? `${((100 * n) / d).toFixed(1)}%` : '—');
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const tags = String(args.tags ?? process.env.WATCH_TAGS ?? '')
     .split(',').map((s) => s.trim()).filter(Boolean);
   const season = args.season ? String(args.season) : null;
 
-  if (!tags.length) throw new Error('Pass --tags "#TAG" or set WATCH_TAGS.');
+  if (!tags.length) {
+    throw new Error(
+      'Pass --tags "#TAG" or set WATCH_TAGS. Note dotenv reads an unquoted value ' +
+        'beginning with # as a comment, so quote it in .env.',
+    );
+  }
 
   for (const tag of tags) {
     const polls = await selectPaged<Poll>((from, to) => {
@@ -232,85 +258,72 @@ async function main() {
       continue;
     }
 
-    const first = polls[0].captured_at;
-    const last = polls[polls.length - 1].captured_at;
-    const hours = (Date.parse(last) - Date.parse(first)) / 3_600_000;
+    const first = polls[0];
+    const last = polls[polls.length - 1];
+    const hours = (Date.parse(last.captured_at) - Date.parse(first.captured_at)) / 3_600_000;
     console.log(
       `${polls.length} polls over ${hours.toFixed(1)}h ` +
-        `(${(hours / Math.max(1, polls.length - 1) * 60).toFixed(0)} min apart on average)`,
+        `(${((hours / Math.max(1, polls.length - 1)) * 60).toFixed(1)} min apart)`,
     );
 
     const r = reconstruct(polls);
     const atk = summarise(r.battles, 'attack');
     const def = summarise(r.battles, 'defence');
-    const events = r.counterAttacks + r.counterDefences;
-
-    // What the counters say happened, versus what the polls could read.
-    const firstPoll = polls[0];
-    const lastPoll = polls[polls.length - 1];
-    const missedBefore =
-      (firstPoll.attack_count ?? 0) + (firstPoll.defence_count ?? 0);
 
     console.log(
-      `counters moved through ${r.counterAttacks} attacks and ${r.counterDefences} defences; ` +
-        `${atk.count + def.count} classified (${pct(atk.count + def.count, events)})`,
+      `trophies ${first.trophies} -> ${last.trophies} (moved ${r.trophyMovement}, ` +
+        `${r.trophyResolved} attributed to a single battle)`,
     );
-    console.log(
-      `  ${r.ambiguous} ambiguous window(s) holding ${r.ambiguousEvents} event(s); ` +
-        `${r.unexplained} unexplained trophy move(s); ${r.resets} reset boundary/ies`,
-    );
-    console.log(
-      `  trophies ${firstPoll.trophies} -> ${lastPoll.trophies} ` +
-        `(moved ${r.trophyMovement}, ${r.trophyResolved} of it attributed to a classified battle)`,
-    );
-
-    // Polling cannot recover what happened before it started. Say how much that
-    // was, so the totals are compared against the right thing.
-    if (missedBefore > 0) {
+    if (r.ambiguous) {
       console.log(
-        `  NOTE: at the first poll this player was already on ` +
-          `${firstPoll.attack_count} attacks and ${firstPoll.defence_count} defences. ` +
-          `Those ${missedBefore} battles predate the watch and cannot be reconstructed — ` +
-          `compare against the in-game screen MINUS them, not the full week.`,
+        `  ${r.ambiguous} window(s) held more than one battle — ` +
+          `about ${r.ambiguousEvents} event(s) unattributable`,
       );
     }
+    if (r.resets) console.log(`  ${r.resets} reset boundary/ies skipped`);
 
     console.log(
-      `\nATTACKS   ${atk.count} attacks, ${atk.stars} stars, avg ${atk.average.toFixed(2)}`,
+      `\nATTACKS   ${atk.count} scoring attacks, ${atk.stars} stars, avg ${atk.average.toFixed(2)}`,
     );
     console.log(
       `          3★ ${atk.hist[3]}   2★ ${atk.hist[2]}   1★ ${atk.hist[1]}   0★ ${atk.hist[0]}`,
     );
+    if (atk.count !== r.attackWinsSeen) {
+      console.log(
+        `          NOTE: attackWins moved ${r.attackWinsSeen} but ${atk.count} were classifiable`,
+      );
+    }
+
     console.log(
-      `DEFENCES  ${def.count} defences, ${def.stars} stars conceded, avg ${def.average.toFixed(2)}`,
+      `DEFENCES  ${def.count} visible, ${def.stars} stars conceded, avg ${def.average.toFixed(2)}`,
     );
     console.log(
       `          3★ ${def.hist[3]}   2★ ${def.hist[2]}   1★ ${def.hist[1]}   0★ ${def.hist[0]}`,
+    );
+    console.log(
+      '          INCOMPLETE — a defence where the attacker three-stars you pays +0\n' +
+        '          and wins nothing, so it moves no counter and no trophy and cannot\n' +
+        '          be seen at all. The real 3★ figure is higher than shown and the\n' +
+        '          average worse. Subtract the visible count from the defence count on\n' +
+        "          the in-game screen to get how many were missed.",
     );
 
     if (args.events) {
       console.log('\nraw attack gains :', atk.deltas.join(', '));
       console.log('raw defence gains:', def.deltas.join(', '));
-      console.log('\nevery resolved battle:');
+      console.log('\nevery classified battle:');
       for (const b of r.battles) {
-        console.log(`  ${b.at}  ${b.kind.padEnd(8)} ${String(b.trophyDelta).padStart(4)}  ${b.stars}★`);
+        console.log(
+          `  ${b.at}  ${b.kind.padEnd(8)} ${String(b.trophyDelta).padStart(4)}  ${b.stars}★`,
+        );
       }
     }
   }
 
   console.log(
-    '\nCompare these against the in-game Ranked screen for the same week. If the ' +
-      'attack histogram and average match, the classification is sound and it can ' +
-      'be applied to everyone.',
-  );
-  console.log(
-    'Two expected discrepancies, neither a fault:\n' +
-      '  · A player who received fewer than the full complement of defences is given ' +
-      'an autodefence at the end, scored as the average of the real ones. It never ' +
-      'happened, so no poll window contains it — the screen can show one more defence ' +
-      'than this reconstruction, and the reconstruction is the one describing real battles.\n' +
-      '  · Battles inside a window that also held another battle are counted but not ' +
-      'classified. The line above says how many.',
+    '\nCheck the ATTACK histogram against the in-game battle log for the same week. ' +
+      'Offence is the side with no blind spot, so if it matches, the trophy-to-star ' +
+      'bands are right and this generalises.',
   );
 }
 
