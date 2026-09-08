@@ -247,6 +247,68 @@ export function reconstruct(polls: Poll[]): Reconstruction {
   return out;
 }
 
+/**
+ * The week's offence and defence totals, which survive session batching.
+ *
+ * Per-battle detail does not: a player's record is not published while they are
+ * in a session, so attacks arrive in lumps and nineteen of them worth 579
+ * trophies could be 36 stars or 49. But the lumps are still identifiable —
+ * attackWins moves with them — so the trophy movement splits into what was
+ * earned attacking and what was earned defending, and attacks are counted
+ * outright.
+ *
+ * Trophies per attack runs 0 to 40, where 40 means every attack three-starred.
+ * It carries more than a star average, since a two-star at 51% pays 16 and one
+ * at 99% pays 32.
+ */
+export function rate(polls: Poll[]) {
+  let attacks = 0;
+  let attackTrophies = 0;
+  let defenceTrophies = 0;
+  let attackBatches = 0;
+  let defencesSeen = 0;
+
+  for (let i = 1; i < polls.length; i++) {
+    const prev = polls[i - 1];
+    const cur = polls[i];
+    if (
+      prev.trophies == null || cur.trophies == null ||
+      prev.attack_count == null || cur.attack_count == null ||
+      prev.defence_count == null || cur.defence_count == null
+    ) continue;
+
+    // Within a season the counters only rise; anything else is a reset.
+    if (
+      cur.season_id !== prev.season_id ||
+      cur.trophies < prev.trophies ||
+      cur.attack_count < prev.attack_count ||
+      cur.defence_count < prev.defence_count
+    ) continue;
+
+    const da = cur.attack_count - prev.attack_count;
+    const dt = cur.trophies - prev.trophies;
+
+    if (da > 0) {
+      attacks += da;
+      attackTrophies += dt;
+      attackBatches++;
+    } else if (dt > 0) {
+      defenceTrophies += dt;
+      defencesSeen++;
+    }
+  }
+
+  return {
+    attacks,
+    attackTrophies,
+    defenceTrophies,
+    totalTrophies: attackTrophies + defenceTrophies,
+    perAttack: attacks ? attackTrophies / attacks : 0,
+    attackBatches,
+    defencesSeen,
+  };
+}
+
 export function summarise(battles: Battle[], kind: EventKind) {
   const of = battles.filter((b) => b.kind === kind);
   const hist = [0, 0, 0, 0];
@@ -314,6 +376,27 @@ async function main() {
         `(${((hours / Math.max(1, polls.length - 1)) * 60).toFixed(1)} min apart)`,
     );
 
+    // The headline figures first: these hold whether or not battles separated.
+    const w = rate(polls);
+    console.log(
+      `\nOFFENCE   ${w.attacks} attacks, ${w.attackTrophies} trophies, ` +
+        `${w.perAttack.toFixed(2)} per attack (of 40 max)`,
+    );
+    console.log(
+      `          arrived in ${w.attackBatches} batch(es)` +
+        (w.attackBatches && w.attacks / w.attackBatches > 2
+          ? ` — ${(w.attacks / w.attackBatches).toFixed(1)} attacks each, so the record was\n` +
+            '          published per session and individual battles cannot be separated'
+          : ''),
+    );
+    console.log(
+      `DEFENCE   ${w.defenceTrophies} trophies across ${w.defencesSeen} visible defence(s)`,
+    );
+    console.log(
+      '          understated: a defence landing inside an attack batch is counted as\n' +
+        '          attack trophies, and one conceding three stars pays nothing at all',
+    );
+
     const r = reconstruct(polls);
     const atk = summarise(r.battles, 'attack');
     const def = summarise(r.battles, 'defence');
@@ -375,9 +458,10 @@ async function main() {
   }
 
   console.log(
-    '\nCheck the ATTACK histogram against the in-game battle log for the same week. ' +
-      'Offence is the side with no blind spot, so if it matches, the trophy-to-star ' +
-      'bands are right and this generalises.',
+    '\nOFFENCE is the figure to trust. Measured against a real battle log it read ' +
+      '31.93 trophies per attack against 31.57 truly earned — about 1% high, because ' +
+      'a defence had landed inside an attack batch. The per-battle star breakdown ' +
+      'below it only fills in for players whose attacks happened to arrive singly.',
   );
 }
 

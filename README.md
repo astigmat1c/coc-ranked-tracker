@@ -47,7 +47,10 @@ explicit week lists; `0004_clan_sweep.sql` moves everything onto league tiers,
 weekly deltas and the clan sweep; `0005_comparison_single_pass.sql` rewrites
 the comparison function so it survives a real population;
 `0006_capture_before_reset.sql` records how close to the weekly reset a
-capture was taken. Run all six, in order.
+capture was taken; `0007_lifetime_counters.sql` stores achievement counters for
+calibration; `0008_player_polls.sql` adds the watchlist poll table; and
+`0009_battle_ratings.sql` derives offence and defence from it. Run all nine, in
+order.
 
 ### 2. API key
 
@@ -162,7 +165,21 @@ probing. It is worth reading before changing anything:
   `/clans/{tag}` call classifies up to 50 players, clan search pages well past
   200, and measurement gave ~525 Legend II players per 1,000 clan calls. This
   is the route the sweep takes.
-- **Stars are not served, but offence is recoverable.** No endpoint carries a
+- **A player's record is not published mid-session, so per-battle detail is
+  out.** VI's thirty attacks on 8 September arrived in three lumps — 19, then 8,
+  then 3 — while two defences taken hours earlier arrived singly. The API
+  publishes an attacking session only when it ends, and no cadence sees inside
+  one: nineteen attacks worth 579 trophies is anywhere from 36 to 49 stars.
+  What survives is the split, because `attackWins` moves with each lump —
+  windows where it rose are attack trophies, windows where it did not are
+  defence trophies. **Trophies per attack**, 0 to 40, is then arithmetic rather
+  than inference, and says more than a star average since a two-star at 51%
+  pays 16 and one at 99% pays 32. Measured against VI's battle log it read
+  31.93 against 31.57 truly earned, about 1% high because a defence had landed
+  inside a batch. Defence is worse off: 19 trophies seen of 30, since a defence
+  inside an attack batch is misattributed and one conceding three stars pays
+  nothing at all.
+- **Stars are not served, and only partly recoverable.** No endpoint carries a
   star count. But a ranked battle splits a fixed **40 trophies**, and the
   attacker's share follows a fixed table — 0 stars pays 1 per full 10% damage
   (0–4), 1 star pays 5 plus 1 per full 9% above 1% (5–15), 2 stars pays 16 plus
