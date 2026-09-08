@@ -397,10 +397,25 @@ async function main() {
         '          attack trophies, and one conceding three stars pays nothing at all',
     );
 
+    // Per-battle detail, when the player's battles happened to arrive singly.
+    // For anyone whose record published per session this resolves nothing, and
+    // printing an empty star histogram under a populated OFFENCE line reads as
+    // a contradiction rather than as an absence — so it is skipped entirely.
     const r = reconstruct(polls);
     const atk = summarise(r.battles, 'attack');
     const def = summarise(r.battles, 'defence');
 
+    if (!r.battles.length) {
+      console.log(
+        `\nno individual battles separated — every one shared a window with another. ` +
+          'The figures above still hold; the star breakdown does not apply.',
+      );
+      continue;
+    }
+
+    console.log(
+      `\nPER-BATTLE DETAIL — ${r.battles.length} battle(s) arrived alone and can be read individually`,
+    );
     console.log(
       `trophies ${first.trophies} -> ${last.trophies} (moved ${r.trophyMovement}, ` +
         `${r.trophyResolved} attributed to a single battle)`,
@@ -420,29 +435,26 @@ async function main() {
     }
 
     console.log(
-      `\nATTACKS   ${atk.count} scoring attacks, ${atk.stars} stars, avg ${atk.average.toFixed(2)}`,
+      `  attacks   ${atk.count} readable, ${atk.stars} stars, avg ${atk.average.toFixed(2)}`,
     );
     console.log(
-      `          3★ ${atk.hist[3]}   2★ ${atk.hist[2]}   1★ ${atk.hist[1]}   0★ ${atk.hist[0]}`,
+      `            3★ ${atk.hist[3]}   2★ ${atk.hist[2]}   1★ ${atk.hist[1]}   0★ ${atk.hist[0]}`,
     );
     if (atk.count !== r.attackWinsSeen) {
       console.log(
-        `          NOTE: attackWins moved ${r.attackWinsSeen} but ${atk.count} were classifiable`,
+        `            (attackWins moved ${r.attackWinsSeen}; ${atk.count} arrived alone)`,
       );
     }
 
     console.log(
-      `DEFENCES  ${def.count} visible, ${def.stars} stars conceded, avg ${def.average.toFixed(2)}`,
+      `  defences  ${def.count} readable, ${def.stars} stars conceded, avg ${def.average.toFixed(2)}`,
     );
     console.log(
-      `          3★ ${def.hist[3]}   2★ ${def.hist[2]}   1★ ${def.hist[1]}   0★ ${def.hist[0]}`,
+      `            3★ ${def.hist[3]}   2★ ${def.hist[2]}   1★ ${def.hist[1]}   0★ ${def.hist[0]}`,
     );
     console.log(
-      '          INCOMPLETE — a defence where the attacker three-stars you pays +0\n' +
-        '          and wins nothing, so it moves no counter and no trophy and cannot\n' +
-        '          be seen at all. The real 3★ figure is higher than shown and the\n' +
-        '          average worse. Subtract the visible count from the defence count on\n' +
-        "          the in-game screen to get how many were missed.",
+      '            a readable sample, not the week: a defence conceding three stars\n' +
+        '            pays nothing and leaves no trace, so these skew optimistic',
     );
 
     if (args.events) {
