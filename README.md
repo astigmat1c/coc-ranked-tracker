@@ -162,20 +162,27 @@ probing. It is worth reading before changing anything:
   `/clans/{tag}` call classifies up to 50 players, clan search pages well past
   200, and measurement gave ~525 Legend II players per 1,000 clan calls. This
   is the route the sweep takes.
-- **Stars are not served, but they are recoverable.** No endpoint carries a
-  star count — see the probe results below. But every ranked battle splits a
-  fixed **40 trophies** between attacker and defender, with stars and
-  destruction setting the split: a 3-star attack is 40, a 2-star is roughly
-  20–32, and the defender keeps whatever the attacker did not take, so holding
-  at zero stars is the full 40 and being three-starred is nothing. That makes a
-  single battle's trophy movement a star count rather than a proxy for one. Poll
-  a player often enough that a window contains exactly one event and the star
-  falls out; `worker/src/classify.ts` does this and reproduces a known week
-  exactly — 30 attacks as 22/8/0/0 for 2.73, 29 defences as 12/13/3/1 for 2.24.
-  Cadence is the constraint, not correctness: attacks are bursty, and over 200
-  simulated weeks a 30-minute cadence resolves only 57% of events (star average
-  off by 0.11) against 70% at 15 minutes. Hence `--loop`, which polls from
-  inside a scheduled run instead of relying on the scheduler.
+- **Stars are not served, but offence is recoverable.** No endpoint carries a
+  star count. But a ranked battle splits a fixed **40 trophies**, and the
+  attacker's share follows a fixed table — 0 stars pays 1 per full 10% damage
+  (0–4), 1 star pays 5 plus 1 per full 9% above 1% (5–15), 2 stars pays 16 plus
+  1 per full 3% above 50% (16–32), and 3 stars is a flat 40. The defender keeps
+  the remainder. So a single battle's trophy movement *is* a star count. Poll
+  often enough that a window holds one battle and the star falls out;
+  `worker/src/classify.ts` reproduces a real logged week exactly — 30 attacks
+  as 16/9/5/0 for 2.37.
+  - Nothing can be worth **33–39**, which is load-bearing: an unattributed rise
+    of 1–4 cannot be a defence (the attacker would need 36–39), so it must be
+    the player's own failed 0-star attack, which `attackWins` does not count.
+  - **Defence has a blind spot and it cannot be closed.** Being three-starred
+    pays +0 and wins nothing, so no counter and no trophy moves and the battle
+    is invisible — three of six in the logged week. Defence figures are
+    incomplete in the direction that flatters the player, and `classify` says
+    so rather than averaging the survivors.
+  - Cadence is the other constraint. Attacks are bursty, and over 200 simulated
+    weeks a 30-minute cadence resolves only 57% of events (star average off by
+    0.11) against 70% at 15 minutes. Hence `--loop`, which polls from inside a
+    scheduled run rather than relying on the scheduler.
 - **Stars do not exist anywhere.** Not on the player record, not on a tier, not
   on any ranking or member row. Every response carries `attackWins` and
   `defenseWins` — win *counts*. An average like "2.69 stars per attack" cannot

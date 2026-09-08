@@ -23,13 +23,21 @@
  *
  * HOW A BATTLE IS IDENTIFIED
  *
- * Every battle splits a fixed 40 between attacker and defender, so what one
- * side gains the other loses out on:
+ * Every battle splits a fixed 40 between attacker and defender, and the
+ * attacker's share follows a published award table:
  *
- *   attacker  3 stars -> 40      defender concedes 3 stars ->  0
- *             2 stars -> 20..32                    2 stars -> 8..20
- *             1 star  -> 1..19                     1 star  -> 21..39
- *             0 stars -> 0                         0 stars -> 40
+ *   0 stars   1 trophy per full 10% damage                 ->  0..4
+ *   1 star    5 base, +1 per full 9% of damage above 1%    ->  5..15
+ *   2 stars   16 base, +1 per full 3% of damage above 50%  -> 16..32
+ *   3 stars   40 flat
+ *
+ * The defender keeps the remainder, so conceding three stars pays 0 and
+ * holding at zero stars pays the full 40.
+ *
+ * Note what is missing: no attack can be worth 33 to 39. That gap is useful —
+ * an unattributed trophy rise of 1..4 cannot be a defence, because that would
+ * require the attacker to have taken 36..39, so it must be a failed 0-star
+ * attack by this player.
  *
  * With attackWins rising by one, the window holds an attack and its trophy
  * change is that attack's award. With no counter moving but trophies rising,
@@ -56,16 +64,30 @@ import { getDb, selectPaged } from './db.js';
 export const BATTLE_TROPHIES = 40;
 
 /**
- * Attacker's trophy gain -> stars scored.
+ * Attacker's trophy gain -> stars scored, straight off the award table.
  *
- * Bands confirmed against VI's battle log: every +40 tile shows three stars,
- * +20 through +32 show two, and +13/+14 show one.
+ * The boundaries are 16 and 5, not 20 and 1. An earlier version guessed 20 and
+ * 1 from observed values and was wrong at both ends: +16..+19 is a two-star on
+ * exactly 50-59% damage, and +1..+4 is a zero-star that merely did some damage.
+ * VI's battle log contains no value in either range, which is why it validated
+ * anyway — a reminder that agreeing with one sample is not the same as being
+ * right.
  */
 export function starsFromAttackerGain(gain: number): 0 | 1 | 2 | 3 {
   if (gain >= 40) return 3;
-  if (gain >= 20) return 2;
-  if (gain >= 1) return 1;
+  if (gain >= 16) return 2;
+  if (gain >= 5) return 1;
   return 0;
+}
+
+/**
+ * Whether an attacker could have been awarded this many trophies at all.
+ *
+ * Two stars tops out at 32 and three stars is a flat 40, so 33..39 is
+ * unreachable. A value in that gap means the reading is not a single attack.
+ */
+export function attackerGainIsPossible(gain: number): boolean {
+  return gain >= 0 && gain <= 32 || gain === BATTLE_TROPHIES;
 }
 
 /** Defender's trophy gain -> stars conceded, via the 40-trophy split. */
@@ -99,6 +121,8 @@ export interface Reconstruction {
   ambiguousEvents: number;
   /** Windows spanning the weekly reset. */
   resets: number;
+  /** Windows whose trophy change no single battle could have produced. */
+  impossible: number;
 
   // ---- audit ----
   /** How far attackWins moved: attacks that scored at least one star. */
@@ -123,6 +147,7 @@ export function reconstruct(polls: Poll[]): Reconstruction {
     ambiguous: 0,
     ambiguousEvents: 0,
     resets: 0,
+    impossible: 0,
     attackWinsSeen: 0,
     defenceWinsSeen: 0,
     trophyMovement: 0,
@@ -173,27 +198,50 @@ export function reconstruct(polls: Poll[]): Reconstruction {
       continue;
     }
 
-    out.trophyResolved += dt;
-
     if (da === 1) {
-      // An attack that scored. Its award is the whole trophy change.
+      // An attack that scored at least one star. Its award is the whole change.
+      if (!attackerGainIsPossible(dt)) {
+        out.impossible++;
+        continue;
+      }
+      out.trophyResolved += dt;
       out.battles.push({
         at: cur.captured_at,
         kind: 'attack',
         trophyDelta: dt,
         stars: starsFromAttackerGain(dt),
       });
-    } else {
-      // Either a defence won outright (dd === 1, the full 40 kept) or, with no
-      // counter moving at all, a defence that conceded something. Both are the
-      // player being attacked, and both are read the same way.
-      out.battles.push({
-        at: cur.captured_at,
-        kind: 'defence',
-        trophyDelta: dt,
-        stars: starsConcededFromDefenderGain(dt),
-      });
+      continue;
     }
+
+    // No attack counter movement. Either the player was attacked, or they
+    // attacked and scored nothing — attackWins only counts attacks that scored.
+    // The award table separates the two: a defence pays the attacker's
+    // remainder, and 33..39 is not a payable amount, so 1..4 to this player
+    // could only have come from their own failed attack.
+    if (dt >= 1 && dt <= 4) {
+      out.trophyResolved += dt;
+      out.battles.push({ at: cur.captured_at, kind: 'attack', trophyDelta: dt, stars: 0 });
+      continue;
+    }
+
+    // 5..7 is unreachable from either side: as an attack it would be a one-star
+    // and would have moved attackWins; as a defence it would need the attacker
+    // on 33..35, which no award produces.
+    if (dt < 8) {
+      out.impossible++;
+      continue;
+    }
+
+    // Either a defence won outright (dd === 1, the full 40 kept) or, with no
+    // counter moving, a defence that conceded something.
+    out.trophyResolved += dt;
+    out.battles.push({
+      at: cur.captured_at,
+      kind: 'defence',
+      trophyDelta: dt,
+      stars: starsConcededFromDefenderGain(dt),
+    });
   }
 
   return out;
@@ -281,6 +329,12 @@ async function main() {
       );
     }
     if (r.resets) console.log(`  ${r.resets} reset boundary/ies skipped`);
+    if (r.impossible) {
+      console.log(
+        `  ${r.impossible} window(s) with a trophy change no single battle can produce ` +
+          '— worth looking at with --events',
+      );
+    }
 
     console.log(
       `\nATTACKS   ${atk.count} scoring attacks, ${atk.stars} stars, avg ${atk.average.toFixed(2)}`,
